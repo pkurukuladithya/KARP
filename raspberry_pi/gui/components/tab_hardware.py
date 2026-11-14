@@ -37,13 +37,13 @@ class TabHardware(QWidget):
         title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
         status_layout.addWidget(title, 0, 0, 1, 3)
 
-        self.lbl_esp32_status = QLabel("ESP32 Controller: CONNECTED (/dev/ttyUSB0)")
-        self.lbl_i2c_status = QLabel("I2C Accelerometer: DETECTED (0x68)")
-        self.lbl_uart_status = QLabel("UART GPS: DETECTED (9600 Baud)")
+        self.lbl_esp32_status = QLabel("ESP32 Controller: DISCONNECTED")
+        self.lbl_i2c_status = QLabel("I2C Accelerometer: NO SIGNAL")
+        self.lbl_uart_status = QLabel("UART GPS: NO SIGNAL")
 
-        self.lbl_esp32_status.setStyleSheet("color: #00E676; font-weight: bold;")
-        self.lbl_i2c_status.setStyleSheet("color: #00E676; font-weight: bold;")
-        self.lbl_uart_status.setStyleSheet("color: #00E676; font-weight: bold;")
+        self.lbl_esp32_status.setStyleSheet("color: #FF334B; font-weight: bold;")
+        self.lbl_i2c_status.setStyleSheet("color: #FF334B; font-weight: bold;")
+        self.lbl_uart_status.setStyleSheet("color: #FF334B; font-weight: bold;")
 
         status_layout.addWidget(self.lbl_esp32_status, 1, 0)
         status_layout.addWidget(self.lbl_i2c_status, 1, 1)

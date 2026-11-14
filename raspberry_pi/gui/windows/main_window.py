@@ -60,6 +60,7 @@ class MainWindow(QMainWindow):
 
         # 2. Dynamic Safety Alert Banner
         self.alert_banner = AlertBanner()
+        self.alert_banner.set_alert("HARDWARE DISCONNECTED — BRAIN & ESP32 OFFLINE", "WARNING")
         main_layout.addWidget(self.alert_banner)
 
         # 3. Main 7 Navigation Tabs
@@ -96,11 +97,11 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
 
         # Status Chips
-        self.chip_ai = StatusChip("AI LINK", "CONNECTING", StatusChip.STATE_WARN)
-        self.chip_esp32 = StatusChip("ESP32", "CONNECTING", StatusChip.STATE_WARN)
-        self.chip_gps = StatusChip("GNSS", "ACQUIRING", StatusChip.STATE_WARN)
-        self.chip_cam = StatusChip("CAMERA", "INIT", StatusChip.STATE_OK)
-        self.chip_mode = StatusChip("MODE", "HARDWARE", StatusChip.STATE_OK)
+        self.chip_ai = StatusChip("BRAIN", "NOT CONNECTED", StatusChip.STATE_ERROR)
+        self.chip_esp32 = StatusChip("ESP32", "DISCONNECTED", StatusChip.STATE_ERROR)
+        self.chip_gps = StatusChip("GNSS", "SIGNAL LOST", StatusChip.STATE_ERROR)
+        self.chip_cam = StatusChip("CAMERA", "CLOSED", StatusChip.STATE_ERROR)
+        self.chip_mode = StatusChip("MODE", "REAL HARDWARE", StatusChip.STATE_OK)
 
         header_layout.addWidget(self.chip_ai)
         header_layout.addWidget(self.chip_esp32)
@@ -171,9 +172,19 @@ class MainWindow(QMainWindow):
         self.tab_live_vision.video_widget.update_frame(image, fps, latency_ms)
         self.chip_cam.set_status(f"{fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
 
+    @Slot(bool, str)
+    def on_camera_status_changed(self, is_open: bool, msg: str) -> None:
+        if is_open:
+            self.chip_cam.set_status("ONLINE", StatusChip.STATE_OK)
+        else:
+            self.chip_cam.set_status("CLOSED", StatusChip.STATE_ERROR)
+            if not self._ai_connected:
+                self.tab_overview.video_widget.set_offline_status("CAMERA CLOSED / NO VIDEO SIGNAL")
+                self.tab_live_vision.video_widget.set_offline_status("CAMERA CLOSED / NO VIDEO SIGNAL")
+
     @Slot(object, int, int)
     def on_local_camera_frame(self, frame_bgr, frame_id: int, timestamp_ms: int) -> None:
-        """Called by local camera worker. If Laptop AI is offline, display local camera / road stream directly!"""
+        """Called by local camera worker. If Laptop AI is offline, display raw camera feed with clear notice!"""
         import time
         if not self._ai_connected or (time.time() - self._last_ai_frame_time > 1.5):
             import cv2
@@ -183,7 +194,7 @@ class MainWindow(QMainWindow):
             qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
             self.tab_overview.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
             self.tab_live_vision.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
-            self.chip_cam.set_status("30 FPS", StatusChip.STATE_OK)
+            self.chip_cam.set_status("30 FPS (RAW)", StatusChip.STATE_OK)
 
     @Slot(object)
     def on_ai_telemetry(self, telemetry: AiTelemetry) -> None:
@@ -261,17 +272,19 @@ class MainWindow(QMainWindow):
             if fix > 0:
                 self.chip_gps.set_status(f"{sats} SATS (FIX)", StatusChip.STATE_OK)
             else:
-                self.chip_gps.set_status("NO FIX", StatusChip.STATE_WARN)
+                self.chip_gps.set_status("SIGNAL LOST", StatusChip.STATE_ERROR)
 
     @Slot(bool)
     def on_ai_connection_changed(self, connected: bool) -> None:
         self._ai_connected = connected
         if connected:
             self.chip_ai.set_status("CONNECTED", StatusChip.STATE_OK)
-            self.alert_banner.set_alert("AI PROCESSING CONNECTED — PERCEPTION PIPELINE ACTIVE", "NORMAL")
+            self.alert_banner.set_alert("BRAIN CONNECTED — AI PERCEPTION ACTIVE", "NORMAL")
         else:
-            self.chip_ai.set_status("OFFLINE (LOCAL CAM)", StatusChip.STATE_WARN)
-            self.alert_banner.set_alert("STANDALONE PREVIEW — AI CO-PROCESSOR OFFLINE", "INFO")
+            self.chip_ai.set_status("NOT CONNECTED", StatusChip.STATE_ERROR)
+            self.alert_banner.set_alert("BRAIN NOT CONNECTED — WAITING FOR LAPTOP AI", "WARNING")
+            self.tab_overview.set_brain_disconnected()
+            self.tab_live_vision.set_disconnected()
 
     @Slot(bool)
     def on_esp32_connection_changed(self, connected: bool) -> None:
@@ -279,7 +292,11 @@ class MainWindow(QMainWindow):
             self.chip_esp32.set_status("CONNECTED", StatusChip.STATE_OK)
             self.tab_hardware.update_hardware_status(True, True, True)
         else:
-            self.chip_esp32.set_status("OFFLINE", StatusChip.STATE_ERROR)
+            self.chip_esp32.set_status("DISCONNECTED", StatusChip.STATE_ERROR)
+            self.chip_gps.set_status("SIGNAL LOST", StatusChip.STATE_ERROR)
+            self.tab_overview.set_sensors_disconnected()
+            self.tab_sensors.set_disconnected()
+            self.tab_vibration.set_disconnected()
             self.tab_hardware.update_hardware_status(False, False, False)
 
     def _on_threshold_changed(self, threshold_g: float, persist_to_disk: bool) -> None:

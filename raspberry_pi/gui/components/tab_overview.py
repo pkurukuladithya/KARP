@@ -50,20 +50,20 @@ class TabOverview(QWidget):
         adas_layout = QGridLayout(adas_card)
         adas_layout.setSpacing(8)
 
-        self.lbl_lane_status = QLabel("LANE: TRACKING (CENTERED)")
-        self.lbl_lane_status.setStyleSheet("color: #00E676; font-weight: bold; font-size: 13px;")
+        self.lbl_lane_status = QLabel("LANE: NO SIGNAL (BRAIN OFFLINE)")
+        self.lbl_lane_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
         adas_layout.addWidget(self.lbl_lane_status, 0, 0, 1, 2)
 
-        self.lbl_traffic_light = QLabel("TRAFFIC LIGHT: UNKNOWN")
+        self.lbl_traffic_light = QLabel("TRAFFIC LIGHT: NO SIGNAL")
         self.lbl_traffic_light.setStyleSheet("color: #8B949E; font-weight: bold;")
         adas_layout.addWidget(self.lbl_traffic_light, 1, 0)
 
         self.lbl_active_sign = QLabel("SPEED LIMIT: --")
-        self.lbl_active_sign.setStyleSheet("color: #00D2FF; font-weight: bold;")
+        self.lbl_active_sign.setStyleSheet("color: #8B949E; font-weight: bold;")
         adas_layout.addWidget(self.lbl_active_sign, 1, 1)
 
-        self.lbl_objects_summary = QLabel("DETECTED OBJECTS: 0")
-        self.lbl_objects_summary.setStyleSheet("color: #F0F6FC;")
+        self.lbl_objects_summary = QLabel("DETECTED OBJECTS: NO SIGNAL (BRAIN OFFLINE)")
+        self.lbl_objects_summary.setStyleSheet("color: #8B949E;")
         adas_layout.addWidget(self.lbl_objects_summary, 2, 0, 1, 2)
 
         right_panel.addWidget(adas_card)
@@ -73,13 +73,13 @@ class TabOverview(QWidget):
         telemetry_card.setProperty("card", True)
         tel_layout = QGridLayout(telemetry_card)
 
-        self.lbl_gps_summary = QLabel("GPS: NO FIX (0 SATS)")
-        self.lbl_accel_summary = QLabel("ROAD: SMOOTH (1.00g)")
-        self.lbl_link_summary = QLabel("AI CO-PROCESSOR: CONNECTED")
+        self.lbl_gps_summary = QLabel("GPS: SIGNAL LOST (0 SATS)")
+        self.lbl_accel_summary = QLabel("ACCEL: SENSOR DISCONNECTED")
+        self.lbl_link_summary = QLabel("BRAIN: NOT CONNECTED")
 
-        self.lbl_gps_summary.setStyleSheet("color: #8B949E;")
-        self.lbl_accel_summary.setStyleSheet("color: #00E676;")
-        self.lbl_link_summary.setStyleSheet("color: #00D2FF;")
+        self.lbl_gps_summary.setStyleSheet("color: #FF334B;")
+        self.lbl_accel_summary.setStyleSheet("color: #FF334B;")
+        self.lbl_link_summary.setStyleSheet("color: #FF334B;")
 
         tel_layout.addWidget(self.lbl_gps_summary, 0, 0)
         tel_layout.addWidget(self.lbl_accel_summary, 1, 0)
@@ -125,3 +125,21 @@ class TabOverview(QWidget):
         else:
             dist_str = f" | Closest: {closest_dist_m:.1f}m" if closest_dist_m > 0 else ""
             self.lbl_objects_summary.setText(f"DETECTED OBJECTS: {count} TRACKED{dist_str}")
+
+    def set_brain_disconnected(self) -> None:
+        self.lbl_lane_status.setText("LANE: NO SIGNAL (BRAIN OFFLINE)")
+        self.lbl_lane_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
+        self.lbl_traffic_light.setText("TRAFFIC LIGHT: NO SIGNAL")
+        self.lbl_traffic_light.setStyleSheet("color: #8B949E; font-weight: bold;")
+        self.lbl_active_sign.setText("SPEED LIMIT: --")
+        self.lbl_objects_summary.setText("DETECTED OBJECTS: NO SIGNAL (BRAIN OFFLINE)")
+        self.lbl_link_summary.setText("BRAIN: NOT CONNECTED")
+        self.lbl_link_summary.setStyleSheet("color: #FF334B;")
+
+    def set_sensors_disconnected(self) -> None:
+        self.lbl_gps_summary.setText("GPS: SIGNAL LOST (0 SATS)")
+        self.lbl_gps_summary.setStyleSheet("color: #FF334B;")
+        self.lbl_accel_summary.setText("ACCEL: SENSOR DISCONNECTED")
+        self.lbl_accel_summary.setStyleSheet("color: #FF334B;")
+        self.speedometer.set_speed(0.0)
+        self.g_meter.set_g_force(0.0)

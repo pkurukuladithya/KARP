@@ -4,6 +4,7 @@ from .sensor_charts import AccelerometerChartWidget
 from .alert_banner import AlertBanner
 from .status_chip import StatusChip
 from .map_widget import MapWidget
+from .osm_map_widget import OpenStreetMapWidget
 
 __all__ = [
     "VideoWidget",
@@ -13,4 +14,5 @@ __all__ = [
     "AlertBanner",
     "StatusChip",
     "MapWidget",
+    "OpenStreetMapWidget",
 ]

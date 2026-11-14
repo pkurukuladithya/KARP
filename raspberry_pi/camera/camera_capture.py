@@ -40,55 +40,55 @@ class CameraCaptureWorker(QThread):
 
     def run(self) -> None:
         cap: Optional[cv2.VideoCapture] = None
-        use_sim = self.simulation_mode
-
-        if not use_sim:
-            cap = cv2.VideoCapture(self.camera_index)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                cap.set(cv2.CAP_PROP_FPS, self.fps)
-                self.camera_status_changed.emit(True, f"Hardware Camera #{self.camera_index} Opened")
-            else:
-                self.camera_status_changed.emit(False, f"Camera #{self.camera_index} unavailable. Switching to Simulation Mode.")
-                use_sim = True
-                if cap:
-                    cap.release()
-                    cap = None
-        else:
-            self.camera_status_changed.emit(True, "Synthetic Camera Generator Active")
-
         target_interval = 1.0 / self.fps
         t_sim = 0.0
 
         while self._running:
-            start_time = time.time()
-            self._frame_id += 1
-            ts_ms = int(time.time() * 1000)
+            # 1. Hardware Camera Mode (default)
+            if not self.simulation_mode:
+                if cap is None or not cap.isOpened():
+                    cap = cv2.VideoCapture(self.camera_index)
+                    if cap.isOpened():
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                        cap.set(cv2.CAP_PROP_FPS, self.fps)
+                        self.camera_status_changed.emit(True, f"Camera #{self.camera_index} Opened")
+                    else:
+                        self.camera_status_changed.emit(False, f"Camera #{self.camera_index} Closed / Not Connected")
+                        if cap:
+                            cap.release()
+                            cap = None
+                        time.sleep(1.0)
+                        continue
 
-            frame: Optional[np.ndarray] = None
-
-            if not use_sim and cap is not None and cap.isOpened():
                 ret, raw_frame = cap.read()
                 if ret and raw_frame is not None:
+                    self._frame_id += 1
+                    ts_ms = int(time.time() * 1000)
                     if raw_frame.shape[1] != self.width or raw_frame.shape[0] != self.height:
                         frame = cv2.resize(raw_frame, (self.width, self.height))
                     else:
                         frame = raw_frame
+                    self.frame_captured.emit(frame, self._frame_id, ts_ms)
                 else:
-                    use_sim = True
-                    self.camera_status_changed.emit(False, "Camera frame read failed. Falling back to simulation.")
+                    self.camera_status_changed.emit(False, "Camera frame read failed. Reconnecting...")
+                    if cap:
+                        cap.release()
+                        cap = None
+                    time.sleep(0.5)
 
-            if use_sim or frame is None:
+            # 2. Simulation Mode (only if explicitly enabled via --simulation)
+            else:
+                start_time = time.time()
+                self._frame_id += 1
+                ts_ms = int(time.time() * 1000)
                 t_sim += target_interval
                 frame = self._render_synthetic_road_frame(t_sim)
-
-            self.frame_captured.emit(frame, self._frame_id, ts_ms)
-
-            elapsed = time.time() - start_time
-            sleep_time = target_interval - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
+                self.frame_captured.emit(frame, self._frame_id, ts_ms)
+                elapsed = time.time() - start_time
+                sleep_time = target_interval - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
         if cap and cap.isOpened():
             cap.release()

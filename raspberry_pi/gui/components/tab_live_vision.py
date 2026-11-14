@@ -46,10 +46,10 @@ class TabLiveVision(QWidget):
         perf_card.setProperty("card", True)
         perf_layout = QGridLayout(perf_card)
 
-        self.lbl_device = QLabel("INFERENCE DEVICE: NVIDIA RTX 4050")
-        self.lbl_device.setStyleSheet("color: #00D2FF; font-weight: bold;")
+        self.lbl_device = QLabel("INFERENCE DEVICE: NOT CONNECTED (OFFLINE)")
+        self.lbl_device.setStyleSheet("color: #FF334B; font-weight: bold;")
         self.lbl_fps = QLabel("INFERENCE FPS: 0.0")
-        self.lbl_latency = QLabel("LATENCY: 0.0 ms")
+        self.lbl_latency = QLabel("LATENCY: --")
         self.lbl_dropped = QLabel("DROPPED FRAMES: 0")
 
         perf_layout.addWidget(self.lbl_device, 0, 0, 1, 2)
@@ -122,3 +122,10 @@ class TabLiveVision(QWidget):
             self.table_objects.setItem(row, 2, QTableWidgetItem(f"{obj.confidence*100:.0f}%"))
             dist_str = f"{obj.estimated_distance_m:.1f}m" if obj.estimated_distance_m is not None else "--"
             self.table_objects.setItem(row, 3, QTableWidgetItem(dist_str))
+
+    def set_disconnected(self) -> None:
+        self.lbl_device.setText("INFERENCE DEVICE: NOT CONNECTED (OFFLINE)")
+        self.lbl_device.setStyleSheet("color: #FF334B; font-weight: bold;")
+        self.lbl_fps.setText("INFERENCE FPS: 0.0")
+        self.lbl_latency.setText("LATENCY: --")
+        self.table_objects.setRowCount(0)

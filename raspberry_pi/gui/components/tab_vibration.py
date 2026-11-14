@@ -64,11 +64,11 @@ class TabVibration(QWidget):
         ctrl_layout.addWidget(self.btn_save_thresh, 1, 3)
 
         # Status Indicators
-        self.lbl_vibe_status = QLabel("ROAD SURFACE: SMOOTH PAVEMENT")
-        self.lbl_vibe_status.setStyleSheet("color: #00E676; font-weight: bold; font-size: 13px;")
+        self.lbl_vibe_status = QLabel("ROAD SURFACE: ACCELEROMETER DISCONNECTED")
+        self.lbl_vibe_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
         ctrl_layout.addWidget(self.lbl_vibe_status, 2, 0, 1, 2)
 
-        self.lbl_calib_status = QLabel("CALIBRATION: 1G GRAVITY REMOVED (DYNAMIC HPF)")
+        self.lbl_calib_status = QLabel("CALIBRATION: SENSOR OFFLINE (WAITING FOR ESP32)")
         self.lbl_calib_status.setStyleSheet("color: #8B949E; font-size: 11px;")
         ctrl_layout.addWidget(self.lbl_calib_status, 2, 2, 1, 2)
 
@@ -130,3 +130,9 @@ class TabVibration(QWidget):
         else:
             self.lbl_vibe_status.setText(f"ROAD SURFACE: NORMAL PAVEMENT ({mag:.2f}g)")
             self.lbl_vibe_status.setStyleSheet("color: #00E676; font-weight: bold; font-size: 13px;")
+
+    def set_disconnected(self) -> None:
+        self.lbl_vibe_status.setText("ROAD SURFACE: ACCELEROMETER DISCONNECTED")
+        self.lbl_vibe_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
+        self.lbl_calib_status.setText("CALIBRATION: SENSOR OFFLINE (WAITING FOR ESP32)")
+        self.lbl_calib_status.setStyleSheet("color: #8B949E; font-size: 11px;")

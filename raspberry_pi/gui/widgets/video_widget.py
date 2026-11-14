@@ -17,7 +17,7 @@ class VideoWidget(QWidget):
         self._fps: float = 0.0
         self._latency_ms: float = 0.0
         self._resolution_str: str = "--"
-        self._status_text: str = "INITIALIZING STREAM..."
+        self._status_text: str = "CAMERA DISCONNECTED / NO VIDEO SIGNAL"
         self._show_hud: bool = True
 
         self.setMinimumSize(480, 270)
