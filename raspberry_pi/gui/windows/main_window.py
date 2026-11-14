@@ -72,6 +72,9 @@ class MainWindow(QMainWindow):
         if self.config.get("gui", "fullscreen", False):
             self.showFullScreen()
 
+        self._ai_connected = False
+        self._last_ai_frame_time = 0.0
+
     def _init_header_bar(self, layout: QVBoxLayout) -> None:
         header_frame = QFrame()
         header_frame.setObjectName("HeaderBar")
@@ -160,9 +163,27 @@ class MainWindow(QMainWindow):
     # Slot updates from background worker threads
     @Slot(QImage, float, float)
     def on_video_frame(self, image: QImage, fps: float, latency_ms: float) -> None:
+        """Called when return annotated video stream is received from Laptop AI co-processor."""
+        import time
+        self._ai_connected = True
+        self._last_ai_frame_time = time.time()
         self.tab_overview.video_widget.update_frame(image, fps, latency_ms)
         self.tab_live_vision.video_widget.update_frame(image, fps, latency_ms)
         self.chip_cam.set_status(f"{fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
+
+    @Slot(object, int, int)
+    def on_local_camera_frame(self, frame_bgr, frame_id: int, timestamp_ms: int) -> None:
+        """Called by local camera worker. If Laptop AI is offline, display local camera / road stream directly!"""
+        import time
+        if not self._ai_connected or (time.time() - self._last_ai_frame_time > 1.5):
+            import cv2
+            h, w, ch = frame_bgr.shape
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            bytes_per_line = ch * w
+            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+            self.tab_overview.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
+            self.tab_live_vision.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
+            self.chip_cam.set_status("30 FPS", StatusChip.STATE_OK)
 
     @Slot(object)
     def on_ai_telemetry(self, telemetry: AiTelemetry) -> None:
@@ -244,12 +265,13 @@ class MainWindow(QMainWindow):
 
     @Slot(bool)
     def on_ai_connection_changed(self, connected: bool) -> None:
+        self._ai_connected = connected
         if connected:
             self.chip_ai.set_status("CONNECTED", StatusChip.STATE_OK)
+            self.alert_banner.set_alert("AI PROCESSING CONNECTED — PERCEPTION PIPELINE ACTIVE", "NORMAL")
         else:
-            self.chip_ai.set_status("DISCONNECTED", StatusChip.STATE_ERROR)
-            self.alert_banner.set_alert("AI PROCESSING DISCONNECTED — RECONNECTING...", "WARNING")
-            self.tab_overview.video_widget.set_offline_status("AI CO-PROCESSOR DISCONNECTED")
+            self.chip_ai.set_status("OFFLINE (LOCAL CAM)", StatusChip.STATE_WARN)
+            self.alert_banner.set_alert("STANDALONE PREVIEW — AI CO-PROCESSOR OFFLINE", "INFO")
 
     @Slot(bool)
     def on_esp32_connection_changed(self, connected: bool) -> None:

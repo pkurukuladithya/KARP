@@ -94,6 +94,8 @@ def main():
     # 5. Initialize Video Stream Sender (Pi -> Laptop)
     stream_sender = RpiStreamSender(laptop_ip=laptop_ip, port=port_tx)
     cam_worker.frame_captured.connect(stream_sender.push_frame)
+    # Enable local camera/synthetic preview fallback when Laptop AI is offline
+    cam_worker.frame_captured.connect(window.on_local_camera_frame)
 
     # 6. Initialize Return Video Stream Receiver (Laptop -> Pi)
     stream_receiver = RpiStreamReceiver(listen_port=port_rx)
@@ -105,7 +107,23 @@ def main():
     meta_client.connection_changed.connect(window.on_ai_connection_changed)
 
     # 8. Initialize ESP32 Serial or Simulator Worker
-    if sim_mode:
+    use_sim_sensors = sim_mode
+    if not use_sim_sensors:
+        import os
+        serial_exists = False
+        try:
+            import serial.tools.list_ports
+            available_ports = [p.device for p in serial.tools.list_ports.comports()]
+            if esp_port in available_ports or os.path.exists(esp_port):
+                serial_exists = True
+        except Exception:
+            serial_exists = os.path.exists(esp_port)
+
+        if not serial_exists:
+            logger.info(f"Hardware ESP32 port '{esp_port}' not detected. Auto-activating Sensor Simulator mode so HMI is fully animated.")
+            use_sim_sensors = True
+
+    if use_sim_sensors:
         esp_worker = Esp32SimulatorWorker(initial_threshold_g=vibe_thresh)
     else:
         esp_worker = Esp32SerialWorker(port=esp_port, baud_rate=baud_rate)
