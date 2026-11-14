@@ -36,4 +36,7 @@ pip install -r laptop_vision/requirements.txt
 echo "[INFO] Verifying PyTorch and CUDA..."
 python3 -c "import torch; print('PyTorch:', torch.__version__, '| CUDA:', torch.cuda.is_available())" || true
 
+echo "[INFO] Ensuring all shell scripts are executable..."
+chmod +x "$(dirname "$0")"/*.sh 2>/dev/null || chmod +x scripts/*.sh 2>/dev/null || true
+
 echo "Setup Complete! Run with: ./scripts/run_laptop.sh"

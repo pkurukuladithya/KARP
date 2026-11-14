@@ -23,6 +23,9 @@ sudo apt-get install -y \
 echo "[INFO] Granting dialout & video group permissions for $USER..."
 sudo usermod -a -G dialout,video $USER || true
 
+echo "[INFO] Ensuring all shell scripts are executable..."
+chmod +x "$(dirname "$0")"/*.sh 2>/dev/null || chmod +x scripts/*.sh 2>/dev/null || true
+
 VENV_DIR=".env_pi"
 if [ ! -d "$VENV_DIR" ]; then
     echo "[INFO] Creating virtual environment in $VENV_DIR with system site packages..."
