@@ -1,0 +1,70 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# C / C++ / PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clangd/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+
+# Virtual Environments
+venv/
+.venv/
+env/
+.env_laptop/
+.env_pi/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables & Secrets
+.env
+*.local.env
+secrets.json
+
+# Model weights and large binaries (document download links in docs/ or laptop_vision/models/README.md)
+*.pt
+*.pth
+*.onnx
+*.weights
+*.engine
+*.trt
+!laptop_vision/models/README.md
+!esp32_firmware/lib/README.md
+
+# Large sample datasets and test videos
+*.mp4
+*.avi
+*.mkv
+*.h264
+*.bag
+data/raw/
+data/recordings/
+!scripts/assets/sample_clip.mp4.meta
+
+# IDE and OS files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and runtime artifacts
+logs/
+*.log
+*.sqlite3
+coverage.xml
+.coverage
+htmlcov/
+.pytest_cache/
