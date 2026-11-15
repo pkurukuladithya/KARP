@@ -1,0 +1,48 @@
+{
+  "camera": {
+    "source": "0",
+    "width": 640,
+    "height": 480,
+    "fps": 30
+  },
+  "detector": {
+    "enabled": true,
+    "backend": "auto",
+    "model_onnx": "models/yolo11n_320.onnx",
+    "model_ncnn": "models/yolo11n_320_ncnn",
+    "input_size": 320,
+    "conf_threshold": 0.35,
+    "nms_threshold": 0.45,
+    "threads": 3
+  },
+  "lanes": {
+    "enabled": true,
+    "work_width": 320,
+    "roi_top": 0.58,
+    "roi_top_width": 0.60,
+    "roi_bottom_width": 1.0,
+    "hold_frames": 6,
+    "departure_ratio": 0.40
+  },
+  "geometry": {
+    "camera_height_m": 1.2,
+    "pitch_deg": 0.0,
+    "hfov_deg": 70.0
+  },
+  "alerts": {
+    "ttc_critical_s": 1.6,
+    "ttc_warning_s": 2.8,
+    "close_vehicle_m": 6.0,
+    "pedestrian_warning_m": 15.0,
+    "path_left": 0.33,
+    "path_right": 0.67,
+    "hold_s": 0.8
+  },
+  "display": {
+    "window": true,
+    "fullscreen": false,
+    "web_port": 0,
+    "web_fps": 12,
+    "web_quality": 70
+  }
+}

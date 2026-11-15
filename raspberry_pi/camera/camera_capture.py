@@ -83,6 +83,7 @@ class CameraCaptureWorker(QThread):
         # mode it supports; the laptop accepts any size). Otherwise capture, then resize.
         req_w, req_h = (self.out_w, self.out_h) if passthrough else (self.width, self.height)
         if sys.platform.startswith("linux"):
+            self._disable_exposure_priority()
             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
         else:
             cap = cv2.VideoCapture(self.camera_index)
@@ -108,17 +109,62 @@ class CameraCaptureWorker(QThread):
         )
         return cap
 
+    def _disable_exposure_priority(self) -> None:
+        """
+        In dim light most UVC webcams lower their frame rate (to 5-15 fps) to get longer
+        exposure ("exposure priority"). For ADAS we want a constant frame rate instead.
+        Control names differ between kernels, so try both; failures are harmless.
+        """
+        import subprocess
+        dev = f"/dev/video{self.camera_index}"
+        for ctrl in ("exposure_dynamic_framerate=0", "exposure_auto_priority=0"):
+            try:
+                subprocess.run(["v4l2-ctl", "-d", dev, "-c", ctrl], capture_output=True, timeout=2)
+            except Exception:
+                pass
+
     @staticmethod
     def _extract_jpeg(frame: Optional[np.ndarray]) -> Optional[bytes]:
         """Returns JPEG bytes if `frame` is a raw MJPEG buffer (CONVERT_RGB=0), else None."""
         if frame is None or (frame.ndim == 3 and frame.shape[2] == 3):
             return None
         data = frame.reshape(-1)
-        if data.size < 4 or data[0] != 0xFF or data[1] != 0xD8:
+        n = data.size
+        if n < 4 or data[0] != 0xFF or data[1] != 0xD8:
             return None
-        raw = data.tobytes()
-        end = raw.rfind(bytes((0xFF, 0xD9)))  # drop any driver padding after End-Of-Image (EOI marker)
-        return raw[: end + 2] if end > 0 else raw
+
+        # Some UVC drivers hand over the whole (reused) V4L2 buffer: after this frame's
+        # End-Of-Image there are stale bytes from OLDER frames. Searching for the *last*
+        # EOI therefore glues old image data onto the new frame (torn picture, ~1 MB/frame).
+        # Parse properly instead: walk header segments to Start-Of-Scan, then the first
+        # real marker in the entropy-coded data must be EOI (0xFF is only ever followed by
+        # 0x00 stuffing or RST0-7 inside scan data). Anything else = truncated -> drop.
+        i = 2
+        while True:
+            if i + 4 > n or data[i] != 0xFF:
+                return None
+            marker = int(data[i + 1])
+            if marker == 0xFF:  # fill byte
+                i += 1
+                continue
+            seg_len = (int(data[i + 2]) << 8) | int(data[i + 3])
+            if marker == 0xDA:  # Start Of Scan
+                scan_start = i + 2 + seg_len
+                break
+            i += 2 + seg_len
+
+        if scan_start >= n - 1:
+            return None
+        ff_pos = np.flatnonzero(data[scan_start : n - 1] == 0xFF) + scan_start
+        if ff_pos.size == 0:
+            return None
+        nxt = data[ff_pos + 1]
+        is_marker = (nxt != 0x00) & (nxt != 0xFF) & ((nxt < 0xD0) | (nxt > 0xD7))
+        markers = ff_pos[is_marker]
+        if markers.size == 0 or data[markers[0] + 1] != 0xD9:
+            return None  # incomplete frame followed by stale data
+        end = int(markers[0]) + 2
+        return data[:end].tobytes()
 
     def _deliver_jpeg(self, jpeg: bytes) -> None:
         self._frame_id += 1
@@ -158,6 +204,7 @@ class CameraCaptureWorker(QThread):
     def run(self) -> None:
         cap: Optional[cv2.VideoCapture] = None
         validated = True
+        pt_failures = 0
         target_interval = 1.0 / self.fps
         t_sim = 0.0
         frame_count = 0
@@ -175,6 +222,7 @@ class CameraCaptureWorker(QThread):
                         continue
                     self._passthrough_active = want_pt
                     validated = not want_pt
+                    pt_failures = 0
                     self.camera_status_changed.emit(True, f"Camera #{self.camera_index} Opened")
 
                 ret, frame = cap.read()
@@ -185,17 +233,29 @@ class CameraCaptureWorker(QThread):
                     time.sleep(0.5)
                     continue
 
-                jpeg = self._extract_jpeg(frame) if self._passthrough_active else None
-                if self._passthrough_active and not validated:
-                    test = None if jpeg is None else cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
-                    if test is None and not (frame.ndim == 3 and frame.shape[2] == 3):
-                        logger.warning("Camera MJPEG passthrough not usable on this camera/driver; using decode+encode path")
-                        self.passthrough = False
-                        cap.release()
-                        cap = None
-                        continue
-                    validated = True
-                    if jpeg is not None:
+                is_bgr = frame.ndim == 3 and frame.shape[2] == 3
+                jpeg = self._extract_jpeg(frame) if (self._passthrough_active and not is_bgr) else None
+
+                if self._passthrough_active and not is_bgr:
+                    test = None
+                    if jpeg is not None and not validated:
+                        test = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
+                        if test is None:
+                            jpeg = None
+                    if jpeg is None:
+                        pt_failures += 1
+                        if pt_failures >= 15:
+                            logger.warning(
+                                "Camera MJPEG passthrough produced 15 unusable frames in a row on this "
+                                "camera/driver; switching to decode+encode path"
+                            )
+                            self.passthrough = False
+                            cap.release()
+                            cap = None
+                        continue  # drop this (truncated/corrupt) frame
+                    pt_failures = 0
+                    if not validated:
+                        validated = True
                         logger.info(
                             f"MJPEG passthrough ACTIVE: {test.shape[1] * 2}x{test.shape[0] * 2} camera JPEGs "
                             f"forwarded without re-encoding ({len(jpeg) / 1024:.0f} KB/frame)"
@@ -203,9 +263,8 @@ class CameraCaptureWorker(QThread):
 
                 if jpeg is not None:
                     self._deliver_jpeg(jpeg)
-                elif frame.ndim == 3 and frame.shape[2] == 3:
-                    self._deliver(frame)  # decoded BGR fallback (resized + encoded by the sender)
-                # else: corrupt raw buffer -> skip this frame
+                elif is_bgr:
+                    self._deliver(frame)  # decoded BGR (resized + encoded by the sender)
             else:
                 t_sim += target_interval
                 self._deliver(self._render_synthetic_road_frame(t_sim))

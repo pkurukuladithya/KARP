@@ -120,6 +120,10 @@ class TabOverview(QWidget):
             self.lbl_traffic_light.setText(f"TRAFFIC LIGHT: {state} ({conf*100:.0f}%)")
             set_style(self.lbl_traffic_light, f"color: {color_hex}; font-weight: bold;")
 
+    def set_brain_connected(self, device: str, fps: float) -> None:
+        self.lbl_link_summary.setText(f"BRAIN: ONLINE — {fps:.0f} FPS ({device})")
+        set_style(self.lbl_link_summary, "color: #00E676;")
+
     def update_objects_summary(self, count: int, closest_dist_m: float) -> None:
         if count == 0:
             self.lbl_objects_summary.setText("DETECTED OBJECTS: NONE")

@@ -225,8 +225,9 @@ class MainWindow(QMainWindow):
         self._apply_ai_telemetry(telemetry)
 
     def _apply_ai_telemetry(self, telemetry: AiTelemetry) -> None:
-        # Update link chip
+        # Update link chip + overview link summary
         self.chip_ai.set_status(f"ONLINE ({telemetry.performance.inference_fps:.0f} FPS)", StatusChip.STATE_OK)
+        self.tab_overview.set_brain_connected(telemetry.performance.device.split(" (")[0], telemetry.performance.inference_fps)
 
         # Update diagnostics
         self.tab_live_vision.update_diagnostics(
@@ -259,8 +260,6 @@ class MainWindow(QMainWindow):
         if telemetry.warnings:
             highest_warn = telemetry.warnings[0]
             self.alert_banner.set_alert(highest_warn.message, highest_warn.level)
-        elif telemetry.lanes.departure_warning != "NONE":
-            self.alert_banner.set_alert(f"LANE DEPARTURE WARNING — DRIFTING {telemetry.lanes.departure_warning}!", "CRITICAL")
         else:
             self.alert_banner.set_alert("ALL SYSTEMS OPERATIONAL — ADAS PERCEPTION ACTIVE", "NORMAL")
 

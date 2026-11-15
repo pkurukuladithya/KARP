@@ -72,7 +72,12 @@ class CameraStreamReceiver:
 
     def _run_server(self) -> None:
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            # Windows: SO_REUSEADDR would let a 2nd instance silently share this port and
+            # steal connections. Exclusive bind makes a duplicate instance fail loudly instead.
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
         try:
@@ -81,7 +86,10 @@ class CameraStreamReceiver:
             server_sock.settimeout(1.0)
             logger.info(f"Laptop Camera Receiver listening on {self.host}:{self.port}")
         except Exception as e:
-            logger.error(f"Failed to bind video receiver port {self.port}: {e}")
+            logger.error(
+                f"Failed to bind video receiver port {self.port}: {e}. "
+                "Is another copy of laptop_vision/main.py already running? Close it first."
+            )
             return
 
         frame_count = 0

@@ -68,3 +68,8 @@ coverage.xml
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Small CPU models for the standalone Pi brain ARE committed (so `git pull` on the Pi just works)
+!pi_brain/models/*.onnx
+!pi_brain/models/*_ncnn/model.ncnn.bin
+pi_brain/snapshot_*.jpg

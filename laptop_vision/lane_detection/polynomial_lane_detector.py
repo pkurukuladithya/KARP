@@ -64,6 +64,18 @@ class PolynomialLaneDetector(LaneDetectorBase):
         self.M_inv = cv2.getPerspectiveTransform(self._dst_pts, self._src_pts)
         self._prev_left_fit = None
         self._prev_right_fit = None
+        self._missed_frames = 0
+
+    def _is_plausible(self, left_fit: np.ndarray, right_fit: np.ndarray) -> bool:
+        """Real lane boundaries are ~2.5-5 m apart and roughly parallel in the bird's-eye view."""
+        widths = []
+        for y in (self.img_h - 1, self.img_h // 2, 0):
+            lx = left_fit[0] * y * y + left_fit[1] * y + left_fit[2]
+            rx = right_fit[0] * y * y + right_fit[1] * y + right_fit[2]
+            widths.append((rx - lx) * self.xm_per_pix)
+        if min(widths) < 2.3 or max(widths) > 5.5:
+            return False
+        return max(widths) / min(widths) < 1.4
 
     def detect(self, frame_bgr: np.ndarray) -> LaneData:
         in_h, in_w = frame_bgr.shape[:2]
@@ -82,15 +94,22 @@ class PolynomialLaneDetector(LaneDetectorBase):
 
         # 2. Histogram & Sliding Window Search
         left_fit, right_fit, confidence = self._fit_polynomial(binary_warped)
+        if left_fit is not None and not self._is_plausible(left_fit, right_fit):
+            left_fit, right_fit = None, None  # e.g. indoor clutter / random edges
 
         if left_fit is None or right_fit is None:
-            # Fallback to previous fit if available with reduced confidence
-            if self._prev_left_fit is not None and self._prev_right_fit is not None:
+            # Briefly coast on the previous fit (max ~0.3 s), then report "no lanes"
+            self._missed_frames += 1
+            if self._prev_left_fit is not None and self._missed_frames <= 8:
                 left_fit = self._prev_left_fit
                 right_fit = self._prev_right_fit
                 confidence = 0.40
             else:
+                self._prev_left_fit = None
+                self._prev_right_fit = None
                 return LaneData(detected=False, confidence=0.0)
+        else:
+            self._missed_frames = 0
 
         # Exponential moving average smoothing
         if self._prev_left_fit is not None:
@@ -106,6 +125,8 @@ class PolynomialLaneDetector(LaneDetectorBase):
 
         # 4. Evaluate Departure Warning
         departure_warning, _ = self.ldw_evaluator.evaluate(vehicle_offset_m)
+        if confidence < 0.5:
+            departure_warning = "NONE"  # never warn from a weak / coasting lane fit
 
         # 5. Generate Perspective Projection Points
         left_pts, right_pts = self._generate_lane_points(left_fit, right_fit)
