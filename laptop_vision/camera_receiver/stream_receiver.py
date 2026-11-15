@@ -9,7 +9,7 @@ import queue
 import socket
 import threading
 import time
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 import cv2
 import numpy as np
 
@@ -23,9 +23,16 @@ logger = logging.getLogger("KARP.LaptopCameraReceiver")
 
 
 class CameraStreamReceiver:
-    def __init__(self, host: str = "0.0.0.0", port: int = 5000, queue_size: int = 2):
+    def __init__(
+        self,
+        host: str = "0.0.0.0",
+        port: int = 5000,
+        queue_size: int = 2,
+        on_client_connected: Optional[Callable[[str], None]] = None,
+    ):
         self.host = host
         self.port = port
+        self.on_client_connected = on_client_connected
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._frame_queue: queue.Queue = queue.Queue(maxsize=queue_size)
@@ -86,6 +93,11 @@ class CameraStreamReceiver:
                 client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self._is_connected = True
                 logger.info(f"Accepted camera stream from Raspberry Pi at {client_addr}")
+                if self.on_client_connected:
+                    try:
+                        self.on_client_connected(client_addr[0])
+                    except Exception as e:
+                        logger.warning(f"Error in on_client_connected callback: {e}")
             except socket.timeout:
                 continue
             except Exception as e:

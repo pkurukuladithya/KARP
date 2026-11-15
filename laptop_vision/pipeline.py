@@ -46,7 +46,11 @@ class ADASPipelineOrchestrator:
         self.running = False
 
         # 1. Initialize Network Communication Endpoints
-        self.camera_receiver = CameraStreamReceiver(host=rx_host, port=rx_port)
+        self.camera_receiver = CameraStreamReceiver(
+            host=rx_host,
+            port=rx_port,
+            on_client_connected=self._on_pi_stream_connected,
+        )
         self.video_broadcaster = StreamBroadcaster(target_ip=tx_target_ip, port=tx_port)
         self.ws_server = TelemetryWebSocketServer(
             host="0.0.0.0",
@@ -168,6 +172,11 @@ class ADASPipelineOrchestrator:
 
         self.ws_server.broadcast_telemetry(telemetry)
         return telemetry
+
+    def _on_pi_stream_connected(self, client_ip: str) -> None:
+        """Automatically updates the return video broadcaster target IP when the Pi connects."""
+        logger.info(f"Raspberry Pi connected from {client_ip}; routing return annotated stream to {client_ip}:{self.video_broadcaster.port}")
+        self.video_broadcaster.set_target_ip(client_ip)
 
     def _on_client_config_update(self, settings: dict) -> None:
         """Handles runtime configuration updates synced from Raspberry Pi GUI."""

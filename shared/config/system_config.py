@@ -57,8 +57,30 @@ class SystemConfig:
                 except Exception as e:
                     logger.warning(f"Failed to load user config {self._user_path}: {e}")
 
-            # 3. Overlay Environment Variables
+            # 3. Read .env file if present in project root
+            self._load_dotenv_file()
+
+            # 4. Overlay Environment Variables
             self._apply_env_overrides()
+
+    def _load_dotenv_file(self) -> None:
+        """Reads .env file from project root and loads variables into os.environ."""
+        env_path = Path(__file__).parents[2] / ".env"
+        if not env_path.exists():
+            return
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except Exception as e:
+            logger.warning(f"Failed to parse .env file at {env_path}: {e}")
 
     def _apply_env_overrides(self) -> None:
         env_map = {
