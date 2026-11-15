@@ -17,6 +17,7 @@ from shared.protocols.framing import (
     KARP_FRAME_MAGIC,
     KARP_HEADER_SIZE,
     decode_frame_header,
+    encode_ack,
 )
 
 logger = logging.getLogger("KARP.LaptopCameraReceiver")
@@ -132,6 +133,8 @@ class CameraStreamReceiver:
 
                     payload = bytes(buffer[KARP_HEADER_SIZE:total_packet_size])
                     buffer = buffer[total_packet_size:]
+                    # ACK immediately (before decoding) -> sender flow control
+                    client_sock.sendall(encode_ack(header.frame_id))
 
                     # 3. Decode frame
                     nparr = np.frombuffer(payload, dtype=np.uint8)

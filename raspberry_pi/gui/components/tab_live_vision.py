@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QSlider,
 )
+from raspberry_pi.gui.styles.style_utils import set_style
 from raspberry_pi.gui.widgets.video_widget import VideoWidget
 from shared.protocols.message_schemas import DetectedObject, TrafficSignData
 
@@ -47,7 +48,7 @@ class TabLiveVision(QWidget):
         perf_layout = QGridLayout(perf_card)
 
         self.lbl_device = QLabel("INFERENCE DEVICE: NOT CONNECTED (OFFLINE)")
-        self.lbl_device.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_device, "color: #FF334B; font-weight: bold;")
         self.lbl_fps = QLabel("INFERENCE FPS: 0.0")
         self.lbl_latency = QLabel("LATENCY: --")
         self.lbl_dropped = QLabel("DROPPED FRAMES: 0")
@@ -78,13 +79,13 @@ class TabLiveVision(QWidget):
         table_card.setProperty("card", True)
         table_layout = QVBoxLayout(table_card)
         table_title = QLabel("TRACKED TARGETS")
-        table_title.setStyleSheet("font-weight: bold; color: #F0F6FC;")
+        set_style(table_title, "font-weight: bold; color: #F0F6FC;")
         table_layout.addWidget(table_title)
 
         self.table_objects = QTableWidget(0, 4)
         self.table_objects.setHorizontalHeaderLabels(["ID", "Class", "Conf", "Dist (m)"])
         self.table_objects.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table_objects.setStyleSheet("""
+        set_style(self.table_objects, """
             QTableWidget {
                 background-color: #0D1117;
                 border: 1px solid #30363D;
@@ -125,7 +126,7 @@ class TabLiveVision(QWidget):
 
     def set_disconnected(self) -> None:
         self.lbl_device.setText("INFERENCE DEVICE: NOT CONNECTED (OFFLINE)")
-        self.lbl_device.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_device, "color: #FF334B; font-weight: bold;")
         self.lbl_fps.setText("INFERENCE FPS: 0.0")
         self.lbl_latency.setText("LATENCY: --")
         self.table_objects.setRowCount(0)

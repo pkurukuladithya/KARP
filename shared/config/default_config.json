@@ -15,7 +15,9 @@
     "bitrate": 2500000,
     "jpeg_quality": 75,
     "stream_width": 960,
-    "stream_height": 540
+    "stream_height": 540,
+    "return_width": 960,
+    "camera_passthrough": true
   },
   "vision": {
     "confidence_threshold": 0.45,

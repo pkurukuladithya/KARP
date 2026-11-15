@@ -1,6 +1,9 @@
 """
-Video Stream Broadcaster (Pi -> Laptop).
-Transmits raw front-camera footage over the local network to the laptop perception engine.
+Video Stream Sender (Pi -> Laptop).
+
+Transmits front-camera frames to the laptop perception engine with ACK-based flow
+control (bounded latency). Accepts either ready-made JPEG bytes straight from the
+camera's MJPEG stream (zero re-encoding on the Pi) or BGR frames (encoded here).
 """
 
 from __future__ import annotations
@@ -8,14 +11,16 @@ import logging
 import queue
 import socket
 import time
-from typing import Optional
+from typing import Optional, Union
 from PySide6.QtCore import QThread, Signal
 import cv2
 import numpy as np
 
-from shared.protocols.framing import encode_video_frame
+from shared.protocols.framing import AckWindow, encode_video_frame
 
 logger = logging.getLogger("KARP.StreamSender")
+
+FramePayload = Union[np.ndarray, bytes]
 
 
 class RpiStreamSender(QThread):
@@ -27,6 +32,7 @@ class RpiStreamSender(QThread):
         laptop_ip: str = "127.0.0.1",
         port: int = 5000,
         quality: int = 80,
+        max_inflight: int = 2,
         parent=None,
     ):
         super().__init__(parent)
@@ -34,9 +40,11 @@ class RpiStreamSender(QThread):
         self.port = port
         self.quality = quality
         self._running = True
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=2)
+        # 1 slot: the sender only ever holds the newest frame
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=1)
         self._dropped_frames = 0
         self._retarget = False
+        self._window = AckWindow(max_inflight=max_inflight)
 
     def set_laptop_ip(self, ip: str) -> None:
         """Thread-safe: switch the laptop target (e.g. after LAN discovery)."""
@@ -49,41 +57,48 @@ class RpiStreamSender(QThread):
         self._running = False
         self.wait(1000)
 
-    def push_frame(self, frame_bgr: np.ndarray, frame_id: int, timestamp_ms: int) -> None:
-        """Pushes a captured frame (called from the camera thread); drops the oldest if full."""
+    def push_frame(self, frame: FramePayload, frame_id: int, timestamp_ms: int) -> None:
+        """Called from the camera thread. `frame` is JPEG bytes or a BGR ndarray. Keeps only the newest."""
+        item = (frame, frame_id, timestamp_ms)
         try:
-            self._frame_queue.put_nowait((frame_bgr, frame_id, timestamp_ms))
+            self._frame_queue.put_nowait(item)
         except queue.Full:
-            self._dropped_frames += 1
-            # Discard oldest to keep fresh frames
             try:
-                _ = self._frame_queue.get_nowait()
-                self._frame_queue.put_nowait((frame_bgr, frame_id, timestamp_ms))
-            except Exception:
+                self._frame_queue.get_nowait()
+                self._dropped_frames += 1
+            except queue.Empty:
                 pass
+            try:
+                self._frame_queue.put_nowait(item)
+            except queue.Full:
+                pass
+
+    def _to_jpeg(self, frame: FramePayload) -> Optional[bytes]:
+        if isinstance(frame, (bytes, bytearray, memoryview)):
+            return bytes(frame)
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.quality])
+        return buf.tobytes() if ok else None
 
     def run(self) -> None:
         sock: Optional[socket.socket] = None
         is_connected = False
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), self.quality]
-
         frame_count = 0
         last_stat_time = time.time()
-
         last_fail_log = 0.0
+
         while self._running:
             if self._retarget and sock is not None:
                 sock.close()
                 sock = None
             self._retarget = False
 
-            # Reconnect if needed
             if sock is None:
                 try:
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                     sock.settimeout(2.0)
                     sock.connect((self.laptop_ip, self.port))
+                    self._window.reset()
                     is_connected = True
                     self.connection_changed.emit(True)
                     logger.info(f"Connected to Laptop Video Receiver on {self.laptop_ip}:{self.port}")
@@ -103,37 +118,39 @@ class RpiStreamSender(QThread):
                     time.sleep(1.5)
                     continue
 
-            # Fetch frame from queue
             try:
-                frame_bgr, frame_id, timestamp_ms = self._frame_queue.get(timeout=0.2)
-            except queue.Empty:
-                continue
-
-            # Encode and transmit
-            try:
-                ret, jpeg_bytes = cv2.imencode(".jpg", frame_bgr, encode_param)
-                if not ret:
+                # Flow control: wait for ACKs while the window is full (newest frame keeps replacing the pending one)
+                self._window.poll(sock, 0.0)
+                if self._window.full:
+                    self._window.poll(sock, 0.05)
                     continue
 
-                packet = encode_video_frame(frame_id, timestamp_ms, jpeg_bytes.tobytes())
-                sock.sendall(packet)
+                try:
+                    frame, frame_id, timestamp_ms = self._frame_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+
+                jpeg = self._to_jpeg(frame)
+                if not jpeg:
+                    continue
+                sock.sendall(encode_video_frame(frame_id, timestamp_ms, jpeg))
+                self._window.on_sent()
 
                 frame_count += 1
                 now = time.time()
                 if now - last_stat_time >= 1.0:
-                    fps = frame_count / (now - last_stat_time)
-                    self.stats_updated.emit(fps, self._dropped_frames)
+                    self.stats_updated.emit(frame_count / (now - last_stat_time), self._dropped_frames)
                     frame_count = 0
                     last_stat_time = now
 
             except Exception as e:
-                logger.warning(f"Failed to transmit frame to laptop: {e}")
+                logger.warning(f"Video link to laptop reset: {e}")
                 if sock:
                     sock.close()
                     sock = None
                 is_connected = False
                 self.connection_changed.emit(False)
-                time.sleep(1.0)
+                time.sleep(0.5)
 
         if sock:
             sock.close()

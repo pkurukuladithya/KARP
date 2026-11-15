@@ -65,6 +65,66 @@ def decode_frame_header(header_bytes: bytes) -> Optional[FrameHeader]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Video flow control
+#
+# TCP never drops data: if Wi-Fi briefly can't keep up, the OS socket buffers
+# silently queue SECONDS of video and the picture lags further and further behind.
+# Each receiver therefore acknowledges every frame (4-byte frame_id) and each
+# sender keeps at most `max_inflight` unacknowledged frames on the wire. While
+# waiting, the sender's 1-slot queue keeps replacing the pending frame with the
+# newest one, so latency stays bounded (~2 frames) and FPS adapts to the link.
+# ---------------------------------------------------------------------------
+KARP_ACK_FORMAT = ">I"
+KARP_ACK_SIZE = struct.calcsize(KARP_ACK_FORMAT)  # 4 bytes
+
+
+def encode_ack(frame_id: int) -> bytes:
+    return struct.pack(KARP_ACK_FORMAT, frame_id & 0xFFFFFFFF)
+
+
+class AckWindow:
+    """Sender-side in-flight frame counter fed by receiver ACKs."""
+
+    def __init__(self, max_inflight: int = 2, stall_timeout_s: float = 3.0):
+        self.max_inflight = max_inflight
+        self.stall_timeout_s = stall_timeout_s
+        self.reset()
+
+    def reset(self) -> None:
+        import time
+        self.inflight = 0
+        self._partial = 0
+        self._last_progress = time.time()
+
+    @property
+    def full(self) -> bool:
+        return self.inflight >= self.max_inflight
+
+    def on_sent(self) -> None:
+        import time
+        if self.inflight == 0:
+            self._last_progress = time.time()
+        self.inflight += 1
+
+    def poll(self, sock, timeout_s: float = 0.0) -> None:
+        """Reads any available ACKs (waits up to timeout_s). Raises ConnectionError on disconnect/stall."""
+        import select
+        import time
+        readable, _, _ = select.select([sock], [], [], timeout_s)
+        if readable:
+            data = sock.recv(4096)
+            if not data:
+                raise ConnectionError("peer closed connection")
+            total = self._partial + len(data)
+            acks, self._partial = divmod(total, KARP_ACK_SIZE)
+            if acks:
+                self.inflight = max(0, self.inflight - acks)
+                self._last_progress = time.time()
+        if self.inflight > 0 and time.time() - self._last_progress > self.stall_timeout_s:
+            raise ConnectionError("no ACK from receiver (link stalled)")
+
+
 class JsonLineCodec:
     """
     Stream buffer for line-delimited JSON.

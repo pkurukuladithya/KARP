@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QFrame,
 )
+from raspberry_pi.gui.styles.style_utils import set_style
 from raspberry_pi.gui.widgets.sensor_charts import AccelerometerChartWidget
 
 
@@ -33,7 +34,7 @@ class TabSensors(QWidget):
         accel_layout = QGridLayout(accel_card)
 
         title_accel = QLabel("TRIAXIAL ACCELEROMETER (I2C)")
-        title_accel.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(title_accel, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         accel_layout.addWidget(title_accel, 0, 0, 1, 2)
 
         self.lbl_ax = QLabel("X-Axis: -- g")
@@ -42,7 +43,7 @@ class TabSensors(QWidget):
         self.lbl_mag = QLabel("Magnitude: -- g")
         self.lbl_accel_hz = QLabel("Sampling Rate: 0 Hz (OFFLINE)")
         self.lbl_vibe_event = QLabel("Vibration Event: SENSOR DISCONNECTED")
-        self.lbl_vibe_event.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_vibe_event, "color: #FF334B; font-weight: bold;")
 
         accel_layout.addWidget(self.lbl_ax, 1, 0)
         accel_layout.addWidget(self.lbl_ay, 1, 1)
@@ -59,7 +60,7 @@ class TabSensors(QWidget):
         gps_layout = QGridLayout(gps_card)
 
         title_gps = QLabel("GNSS / GPS SATELLITE RECEIVER (UART)")
-        title_gps.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(title_gps, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         gps_layout.addWidget(title_gps, 0, 0, 1, 2)
 
         self.lbl_lat = QLabel("Latitude: --")
@@ -68,8 +69,8 @@ class TabSensors(QWidget):
         self.lbl_speed = QLabel("Ground Speed: 0.0 km/h")
         self.lbl_sats = QLabel("Satellites: 0")
         self.lbl_fix = QLabel("Fix Status: GPS SIGNAL LOST")
-        self.lbl_fix.setStyleSheet("color: #FF334B; font-weight: bold;")
-        self.lbl_fix.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_fix, "color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_fix, "color: #FF334B; font-weight: bold;")
 
         gps_layout.addWidget(self.lbl_lat, 1, 0)
         gps_layout.addWidget(self.lbl_lon, 1, 1)
@@ -87,7 +88,7 @@ class TabSensors(QWidget):
         chart_layout = QVBoxLayout(chart_card)
 
         chart_title = QLabel("REAL-TIME ACCELERATION OSCILLOSCOPE")
-        chart_title.setStyleSheet("color: #F0F6FC; font-weight: bold;")
+        set_style(chart_title, "color: #F0F6FC; font-weight: bold;")
         chart_layout.addWidget(chart_title)
 
         self.chart = AccelerometerChartWidget()
@@ -104,10 +105,10 @@ class TabSensors(QWidget):
 
         if vibe_active:
             self.lbl_vibe_event.setText("Vibration Event: DETECTED (POTHOLE/ROUGH)")
-            self.lbl_vibe_event.setStyleSheet("color: #FF334B; font-weight: bold;")
+            set_style(self.lbl_vibe_event, "color: #FF334B; font-weight: bold;")
         else:
             self.lbl_vibe_event.setText("Vibration Event: NORMAL SURFACE")
-            self.lbl_vibe_event.setStyleSheet("color: #00E676; font-weight: bold;")
+            set_style(self.lbl_vibe_event, "color: #00E676; font-weight: bold;")
 
         self.chart.add_sample(ax, ay, az, mag)
 
@@ -120,13 +121,13 @@ class TabSensors(QWidget):
 
         if is_sim:
             self.lbl_fix.setText("Fix Status: SIMULATION MODE")
-            self.lbl_fix.setStyleSheet("color: #00D2FF; font-weight: bold;")
+            set_style(self.lbl_fix, "color: #00D2FF; font-weight: bold;")
         elif fix > 0:
             self.lbl_fix.setText(f"Fix Status: 3D FIX (QUAL: {fix})")
-            self.lbl_fix.setStyleSheet("color: #00E676; font-weight: bold;")
+            set_style(self.lbl_fix, "color: #00E676; font-weight: bold;")
         else:
             self.lbl_fix.setText("Fix Status: GPS SIGNAL LOST")
-            self.lbl_fix.setStyleSheet("color: #FF334B; font-weight: bold;")
+            set_style(self.lbl_fix, "color: #FF334B; font-weight: bold;")
 
     def set_disconnected(self) -> None:
         self.lbl_ax.setText("X-Axis: -- g")
@@ -135,11 +136,11 @@ class TabSensors(QWidget):
         self.lbl_mag.setText("Magnitude: -- g")
         self.lbl_accel_hz.setText("Sampling Rate: 0 Hz (OFFLINE)")
         self.lbl_vibe_event.setText("Vibration Event: SENSOR DISCONNECTED")
-        self.lbl_vibe_event.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_vibe_event, "color: #FF334B; font-weight: bold;")
         self.lbl_lat.setText("Latitude: --")
         self.lbl_lon.setText("Longitude: --")
         self.lbl_alt.setText("Altitude: --")
         self.lbl_speed.setText("Ground Speed: 0.0 km/h")
         self.lbl_sats.setText("Satellites: 0")
         self.lbl_fix.setText("Fix Status: GPS SIGNAL LOST")
-        self.lbl_fix.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_fix, "color: #FF334B; font-weight: bold;")

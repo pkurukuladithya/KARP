@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTextEdit,
 )
+from raspberry_pi.gui.styles.style_utils import set_style
 
 
 class TabHardware(QWidget):
@@ -34,16 +35,16 @@ class TabHardware(QWidget):
         status_layout = QGridLayout(status_card)
 
         title = QLabel("EMBEDDED HARDWARE PERIPHERAL STATUS")
-        title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(title, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         status_layout.addWidget(title, 0, 0, 1, 3)
 
         self.lbl_esp32_status = QLabel("ESP32 Controller: DISCONNECTED")
         self.lbl_i2c_status = QLabel("I2C Accelerometer: NO SIGNAL")
         self.lbl_uart_status = QLabel("UART GPS: NO SIGNAL")
 
-        self.lbl_esp32_status.setStyleSheet("color: #FF334B; font-weight: bold;")
-        self.lbl_i2c_status.setStyleSheet("color: #FF334B; font-weight: bold;")
-        self.lbl_uart_status.setStyleSheet("color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_esp32_status, "color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_i2c_status, "color: #FF334B; font-weight: bold;")
+        set_style(self.lbl_uart_status, "color: #FF334B; font-weight: bold;")
 
         status_layout.addWidget(self.lbl_esp32_status, 1, 0)
         status_layout.addWidget(self.lbl_i2c_status, 1, 1)
@@ -57,7 +58,7 @@ class TabHardware(QWidget):
         ctrl_layout.setSpacing(10)
 
         ctrl_title = QLabel("ACTUATOR DEMONSTRATION & SAFETY WATCHDOG")
-        ctrl_title.setStyleSheet("color: #F0F6FC; font-weight: bold;")
+        set_style(ctrl_title, "color: #F0F6FC; font-weight: bold;")
         ctrl_layout.addWidget(ctrl_title, 0, 0, 1, 3)
 
         # LED Toggle Button
@@ -73,7 +74,7 @@ class TabHardware(QWidget):
 
         # Safety Note
         lbl_safety = QLabel("WATCHDOG: Firmware automatically forces buzzer OFF after max 1.5 seconds.")
-        lbl_safety.setStyleSheet("color: #8B949E; font-size: 11px;")
+        set_style(lbl_safety, "color: #8B949E; font-size: 11px;")
         ctrl_layout.addWidget(lbl_safety, 1, 2)
 
         layout.addWidget(ctrl_card)
@@ -84,7 +85,7 @@ class TabHardware(QWidget):
         log_layout = QVBoxLayout(log_card)
 
         log_title = QLabel("ESP32 FRAMED SERIAL COMMUNICATION LOG")
-        log_title.setStyleSheet("color: #8B949E; font-weight: bold;")
+        set_style(log_title, "color: #8B949E; font-weight: bold;")
         log_layout.addWidget(log_title)
 
         self.log_console = QTextEdit()
@@ -116,21 +117,21 @@ class TabHardware(QWidget):
     def update_hardware_status(self, esp_connected: bool, i2c_ok: bool, gps_ok: bool) -> None:
         if esp_connected:
             self.lbl_esp32_status.setText("ESP32 Controller: CONNECTED")
-            self.lbl_esp32_status.setStyleSheet("color: #00E676; font-weight: bold;")
+            set_style(self.lbl_esp32_status, "color: #00E676; font-weight: bold;")
         else:
             self.lbl_esp32_status.setText("ESP32 Controller: DISCONNECTED")
-            self.lbl_esp32_status.setStyleSheet("color: #FF334B; font-weight: bold;")
+            set_style(self.lbl_esp32_status, "color: #FF334B; font-weight: bold;")
 
         if i2c_ok:
             self.lbl_i2c_status.setText("I2C Accelerometer: OPERATIONAL")
-            self.lbl_i2c_status.setStyleSheet("color: #00E676; font-weight: bold;")
+            set_style(self.lbl_i2c_status, "color: #00E676; font-weight: bold;")
         else:
             self.lbl_i2c_status.setText("I2C Accelerometer: NO RESPONSE")
-            self.lbl_i2c_status.setStyleSheet("color: #FFB703; font-weight: bold;")
+            set_style(self.lbl_i2c_status, "color: #FFB703; font-weight: bold;")
 
         if gps_ok:
             self.lbl_uart_status.setText("UART GPS: RECEIVING NMEA")
-            self.lbl_uart_status.setStyleSheet("color: #00E676; font-weight: bold;")
+            set_style(self.lbl_uart_status, "color: #00E676; font-weight: bold;")
         else:
             self.lbl_uart_status.setText("UART GPS: WAITING FOR DATA")
-            self.lbl_uart_status.setStyleSheet("color: #FFB703; font-weight: bold;")
+            set_style(self.lbl_uart_status, "color: #FFB703; font-weight: bold;")

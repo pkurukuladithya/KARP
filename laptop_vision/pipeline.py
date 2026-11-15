@@ -57,6 +57,7 @@ class ADASPipelineOrchestrator:
             target_ip=tx_target_ip,
             port=tx_port,
             quality=int(self.config.get("video", "jpeg_quality", 75)),
+            max_width=int(self.config.get("video", "return_width", 960)),
         )
         self.beacon = BrainBeacon(
             video_port=rx_port,

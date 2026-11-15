@@ -99,6 +99,8 @@ class SystemConfig:
             "KARP_STREAM_WIDTH": ("video", "stream_width", int),
             "KARP_STREAM_HEIGHT": ("video", "stream_height", int),
             "KARP_JPEG_QUALITY": ("video", "jpeg_quality", int),
+            "KARP_RETURN_WIDTH": ("video", "return_width", int),
+            "KARP_CAMERA_PASSTHROUGH": ("video", "camera_passthrough", lambda v: v.lower() in ("true", "1", "yes")),
             "KARP_CONFIDENCE_THRESHOLD": ("vision", "confidence_threshold", float),
             "KARP_IOU_THRESHOLD": ("vision", "iou_threshold", float),
             "KARP_YOLO_MODEL": ("vision", "model", str),

@@ -17,6 +17,7 @@ from shared.protocols.framing import (
     KARP_FRAME_MAGIC,
     KARP_HEADER_SIZE,
     decode_frame_header,
+    encode_ack,
     ms32_age,
     now_ms32,
 )
@@ -33,6 +34,14 @@ class RpiStreamReceiver(QThread):
         self.listen_ip = listen_ip
         self.listen_port = listen_port
         self._running = True
+        # Latest-wins delivery: don't decode/emit a new frame until the GUI consumed the last one
+        self._gui_pending = False
+        self._pending_since = 0.0
+        self.skipped_frames = 0
+
+    def frame_consumed(self) -> None:
+        """Called (in the GUI thread) after a frame has been handed to the widgets."""
+        self._gui_pending = False
 
     def stop(self) -> None:
         self._running = False
@@ -97,8 +106,16 @@ class RpiStreamReceiver(QThread):
 
                     payload_bytes = bytes(buffer[KARP_HEADER_SIZE:total_packet_size])
                     buffer = buffer[total_packet_size:]
+                    # ACK immediately (before decoding) -> sender flow control
+                    client_sock.sendall(encode_ack(header.frame_id))
 
-                    # 3. Decode frame
+                    # 3. Skip (without decoding) if the GUI hasn't displayed the previous frame yet
+                    now_s = time.time()
+                    if self._gui_pending and now_s - self._pending_since < 0.2:
+                        self.skipped_frames += 1
+                        continue
+
+                    # 4. Decode frame
                     nparr = np.frombuffer(payload_bytes, dtype=np.uint8)
                     frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -119,6 +136,8 @@ class RpiStreamReceiver(QThread):
                             frame_count = 0
                             last_stat_time = now
 
+                        self._gui_pending = True
+                        self._pending_since = time.time()
                         self.frame_received.emit(qimage, fps, latency_ms)
 
                 except Exception as e:

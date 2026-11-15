@@ -45,6 +45,7 @@ class CameraCaptureWorker(QThread):
         simulation_mode: bool = False,
         stream_width: Optional[int] = None,
         stream_height: Optional[int] = None,
+        passthrough: bool = True,
         parent=None,
     ):
         super().__init__(parent)
@@ -63,6 +64,10 @@ class CameraCaptureWorker(QThread):
         self.preview_max_fps = 15.0
         self._last_preview = 0.0
         self._capture_fps = 0.0
+        # Forward the camera's own MJPEG frames untouched (no decode/resize/encode on the Pi)
+        self.passthrough = passthrough
+        self._passthrough_active = False
+        self._jpeg_bytes_avg = 0.0
 
     def add_frame_sink(self, sink: FrameSink) -> None:
         """Registers a callable invoked from the camera thread for every frame."""
@@ -73,7 +78,10 @@ class CameraCaptureWorker(QThread):
         self.wait(2000)
 
     # ------------------------------------------------------------------ camera
-    def _open_camera(self) -> Optional[cv2.VideoCapture]:
+    def _open_camera(self, passthrough: bool) -> Optional[cv2.VideoCapture]:
+        # Passthrough: ask the camera directly for the stream size (it picks the nearest
+        # mode it supports; the laptop accepts any size). Otherwise capture, then resize.
+        req_w, req_h = (self.out_w, self.out_h) if passthrough else (self.width, self.height)
         if sys.platform.startswith("linux"):
             cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
         else:
@@ -84,18 +92,51 @@ class CameraCaptureWorker(QThread):
         # MJPG must be requested BEFORE the resolution. Raw YUYV at 720p is limited
         # to ~7-10 fps by USB 2.0 bandwidth on most webcams -> laggy video.
         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, req_w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, req_h)
         cap.set(cv2.CAP_PROP_FPS, self.fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # always deliver the newest frame
+        if passthrough:
+            cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)  # V4L2: return the raw MJPEG buffer
 
         fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
         fourcc_str = "".join(chr((fourcc >> (8 * i)) & 0xFF) for i in range(4))
         logger.info(
             f"Camera #{self.camera_index} opened: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
-            f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {cap.get(cv2.CAP_PROP_FPS):.0f} fps, format {fourcc_str!r}"
+            f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {cap.get(cv2.CAP_PROP_FPS):.0f} fps, format {fourcc_str!r}, "
+            f"passthrough={'requested' if passthrough else 'off'}"
         )
         return cap
+
+    @staticmethod
+    def _extract_jpeg(frame: Optional[np.ndarray]) -> Optional[bytes]:
+        """Returns JPEG bytes if `frame` is a raw MJPEG buffer (CONVERT_RGB=0), else None."""
+        if frame is None or (frame.ndim == 3 and frame.shape[2] == 3):
+            return None
+        data = frame.reshape(-1)
+        if data.size < 4 or data[0] != 0xFF or data[1] != 0xD8:
+            return None
+        raw = data.tobytes()
+        end = raw.rfind(bytes((0xFF, 0xD9)))  # drop any driver padding after End-Of-Image (EOI marker)
+        return raw[: end + 2] if end > 0 else raw
+
+    def _deliver_jpeg(self, jpeg: bytes) -> None:
+        self._frame_id += 1
+        ts_ms = int(time.time() * 1000)
+        self._jpeg_bytes_avg = 0.95 * self._jpeg_bytes_avg + 0.05 * len(jpeg) if self._jpeg_bytes_avg else len(jpeg)
+        for sink in self._sinks:
+            try:
+                sink(jpeg, self._frame_id, ts_ms)
+            except Exception as e:
+                logger.debug(f"Frame sink error: {e}")
+
+        now = time.time()
+        if self.preview_enabled and now - self._last_preview >= 1.0 / self.preview_max_fps:
+            self._last_preview = now
+            # Half-resolution decode is ~4x cheaper and plenty for the local fallback preview
+            bgr = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
+            if bgr is not None:
+                self.preview_ready.emit(bgr_to_qimage(bgr), self._capture_fps)
 
     def _deliver(self, frame: np.ndarray) -> None:
         if frame.shape[1] != self.out_w or frame.shape[0] != self.out_h:
@@ -116,6 +157,7 @@ class CameraCaptureWorker(QThread):
 
     def run(self) -> None:
         cap: Optional[cv2.VideoCapture] = None
+        validated = True
         target_interval = 1.0 / self.fps
         t_sim = 0.0
         frame_count = 0
@@ -125,11 +167,14 @@ class CameraCaptureWorker(QThread):
             loop_start = time.time()
             if not self.simulation_mode:
                 if cap is None:
-                    cap = self._open_camera()
+                    want_pt = self.passthrough and sys.platform.startswith("linux")
+                    cap = self._open_camera(want_pt)
                     if cap is None:
                         self.camera_status_changed.emit(False, f"Camera #{self.camera_index} Not Connected")
                         time.sleep(1.0)
                         continue
+                    self._passthrough_active = want_pt
+                    validated = not want_pt
                     self.camera_status_changed.emit(True, f"Camera #{self.camera_index} Opened")
 
                 ret, frame = cap.read()
@@ -139,7 +184,28 @@ class CameraCaptureWorker(QThread):
                     cap = None
                     time.sleep(0.5)
                     continue
-                self._deliver(frame)
+
+                jpeg = self._extract_jpeg(frame) if self._passthrough_active else None
+                if self._passthrough_active and not validated:
+                    test = None if jpeg is None else cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_REDUCED_COLOR_2)
+                    if test is None and not (frame.ndim == 3 and frame.shape[2] == 3):
+                        logger.warning("Camera MJPEG passthrough not usable on this camera/driver; using decode+encode path")
+                        self.passthrough = False
+                        cap.release()
+                        cap = None
+                        continue
+                    validated = True
+                    if jpeg is not None:
+                        logger.info(
+                            f"MJPEG passthrough ACTIVE: {test.shape[1] * 2}x{test.shape[0] * 2} camera JPEGs "
+                            f"forwarded without re-encoding ({len(jpeg) / 1024:.0f} KB/frame)"
+                        )
+
+                if jpeg is not None:
+                    self._deliver_jpeg(jpeg)
+                elif frame.ndim == 3 and frame.shape[2] == 3:
+                    self._deliver(frame)  # decoded BGR fallback (resized + encoded by the sender)
+                # else: corrupt raw buffer -> skip this frame
             else:
                 t_sim += target_interval
                 self._deliver(self._render_synthetic_road_frame(t_sim))

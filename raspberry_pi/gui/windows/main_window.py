@@ -5,7 +5,7 @@ Integrates Header status bar, dynamic alert notification bar, and 7 navigation t
 
 import time
 from typing import Optional
-from PySide6.QtCore import Qt, QSize, Signal, Slot
+from PySide6.QtCore import Qt, QSize, QTimer, Signal, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut, QImage
 from PySide6.QtWidgets import (
     QMainWindow,
@@ -77,6 +77,15 @@ class MainWindow(QMainWindow):
         self._ai_connected = False
         self._last_ai_frame_time = 0.0
         self._last_table_update = 0.0
+        self._last_cam_chip_update = 0.0
+
+        # Latest-wins telemetry: the slot only stores the newest message; this timer
+        # applies it to the widgets at 10 Hz. Telemetry can therefore never queue up
+        # in the GUI event loop, no matter how fast it arrives.
+        self._pending_telemetry: Optional[AiTelemetry] = None
+        self._telemetry_timer = QTimer(self)
+        self._telemetry_timer.timeout.connect(self._apply_pending_telemetry)
+        self._telemetry_timer.start(100)
 
     def ai_video_active(self, max_age_s: float = 1.0) -> bool:
         """True while annotated frames from the laptop are arriving."""
@@ -171,9 +180,12 @@ class MainWindow(QMainWindow):
     @Slot(QImage, float, float)
     def on_video_frame(self, image: QImage, fps: float, latency_ms: float) -> None:
         """Annotated video returned by the Laptop AI co-processor."""
-        self._last_ai_frame_time = time.time()
+        now = time.time()
+        self._last_ai_frame_time = now
         self._update_video_widgets(image, fps, latency_ms)
-        self.chip_cam.set_status(f"AI {fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
+        if now - self._last_cam_chip_update >= 0.5:
+            self._last_cam_chip_update = now
+            self.chip_cam.set_status(f"AI {fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
 
     def _update_video_widgets(self, image: QImage, fps: float, latency_ms: float) -> None:
         # Only the visible tab is repainted by Qt; updating hidden widgets is cheap.
@@ -196,10 +208,23 @@ class MainWindow(QMainWindow):
         if self.ai_video_active():
             return
         self._update_video_widgets(image, capture_fps, 0.0)
-        self.chip_cam.set_status(f"{capture_fps:.0f} FPS (RAW)", StatusChip.STATE_WARN)
+        now = time.time()
+        if now - self._last_cam_chip_update >= 0.5:
+            self._last_cam_chip_update = now
+            self.chip_cam.set_status(f"{capture_fps:.0f} FPS (RAW)", StatusChip.STATE_WARN)
 
     @Slot(object)
     def on_ai_telemetry(self, telemetry: AiTelemetry) -> None:
+        self._pending_telemetry = telemetry
+
+    def _apply_pending_telemetry(self) -> None:
+        telemetry = self._pending_telemetry
+        if telemetry is None:
+            return
+        self._pending_telemetry = None
+        self._apply_ai_telemetry(telemetry)
+
+    def _apply_ai_telemetry(self, telemetry: AiTelemetry) -> None:
         # Update link chip
         self.chip_ai.set_status(f"ONLINE ({telemetry.performance.inference_fps:.0f} FPS)", StatusChip.STATE_OK)
 
@@ -211,7 +236,7 @@ class MainWindow(QMainWindow):
             telemetry.performance.dropped_frames,
         )
         now = time.time()
-        if now - self._last_table_update >= 0.2:  # 5 Hz is plenty for a table; saves Pi CPU
+        if now - self._last_table_update >= 0.3:  # 5 Hz is plenty for a table; saves Pi CPU
             self._last_table_update = now
             self.tab_live_vision.update_objects_table(telemetry.objects)
 
@@ -282,6 +307,8 @@ class MainWindow(QMainWindow):
     @Slot(bool)
     def on_ai_connection_changed(self, connected: bool) -> None:
         self._ai_connected = connected
+        if not connected:
+            self._pending_telemetry = None
         if connected:
             self.chip_ai.set_status("CONNECTED", StatusChip.STATE_OK)
             self.alert_banner.set_alert("BRAIN CONNECTED — AI PERCEPTION ACTIVE", "NORMAL")

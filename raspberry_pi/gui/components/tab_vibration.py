@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QPushButton,
 )
+from raspberry_pi.gui.styles.style_utils import set_style
 from raspberry_pi.gui.widgets.sensor_charts import AccelerometerChartWidget
 
 
@@ -36,12 +37,12 @@ class TabVibration(QWidget):
         ctrl_layout.setSpacing(12)
 
         title = QLabel("ROAD ROUGHNESS & VIBRATION THRESHOLD TUNING")
-        title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(title, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         ctrl_layout.addWidget(title, 0, 0, 1, 4)
 
         # Threshold Slider & SpinBox
         lbl_adjust = QLabel("Active Threshold (g):")
-        lbl_adjust.setStyleSheet("font-weight: bold;")
+        set_style(lbl_adjust, "font-weight: bold;")
         ctrl_layout.addWidget(lbl_adjust, 1, 0)
 
         self.slider_thresh = QSlider(Qt.Horizontal)
@@ -65,11 +66,11 @@ class TabVibration(QWidget):
 
         # Status Indicators
         self.lbl_vibe_status = QLabel("ROAD SURFACE: ACCELEROMETER DISCONNECTED")
-        self.lbl_vibe_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
+        set_style(self.lbl_vibe_status, "color: #FF334B; font-weight: bold; font-size: 13px;")
         ctrl_layout.addWidget(self.lbl_vibe_status, 2, 0, 1, 2)
 
         self.lbl_calib_status = QLabel("CALIBRATION: SENSOR OFFLINE (WAITING FOR ESP32)")
-        self.lbl_calib_status.setStyleSheet("color: #8B949E; font-size: 11px;")
+        set_style(self.lbl_calib_status, "color: #8B949E; font-size: 11px;")
         ctrl_layout.addWidget(self.lbl_calib_status, 2, 2, 1, 2)
 
         main_layout.addWidget(ctrl_card)
@@ -79,7 +80,7 @@ class TabVibration(QWidget):
         chart_card.setProperty("card", True)
         chart_layout = QVBoxLayout(chart_card)
         chart_title = QLabel("DYNAMIC ACCELERATION WAVEFORM & THRESHOLD LINE")
-        chart_title.setStyleSheet("color: #F0F6FC; font-weight: bold;")
+        set_style(chart_title, "color: #F0F6FC; font-weight: bold;")
         chart_layout.addWidget(chart_title)
 
         self.chart = AccelerometerChartWidget(threshold_g=initial_threshold)
@@ -95,7 +96,7 @@ class TabVibration(QWidget):
             "KARP applies a high-pass digital filter (cutoff 5 Hz) and rolling RMS window to isolate high-frequency road impact vibrations "
             "(potholes, rumble strips) from gentle vehicle maneuvers."
         )
-        note_text.setStyleSheet("color: #8B949E; font-size: 11px;")
+        set_style(note_text, "color: #8B949E; font-size: 11px;")
         note_text.setWordWrap(True)
         note_layout.addWidget(note_text)
         main_layout.addWidget(note_card)
@@ -120,19 +121,19 @@ class TabVibration(QWidget):
     def _on_save_clicked(self) -> None:
         self.threshold_updated.emit(self._current_threshold, True)
         self.lbl_calib_status.setText(f"PERSISTED THRESHOLD: {self._current_threshold:.2f}g SYNCED TO DISK & ESP32")
-        self.lbl_calib_status.setStyleSheet("color: #00D2FF; font-size: 11px; font-weight: bold;")
+        set_style(self.lbl_calib_status, "color: #00D2FF; font-size: 11px; font-weight: bold;")
 
     def update_vibration(self, ax: float, ay: float, az: float, mag: float, vibe_detected: bool) -> None:
         self.chart.add_sample(ax, ay, az, mag)
         if vibe_detected:
             self.lbl_vibe_status.setText(f"ROAD SURFACE: SEVERE VIBRATION DETECTED ({mag:.2f}g > {self._current_threshold:.2f}g)!")
-            self.lbl_vibe_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
+            set_style(self.lbl_vibe_status, "color: #FF334B; font-weight: bold; font-size: 13px;")
         else:
             self.lbl_vibe_status.setText(f"ROAD SURFACE: NORMAL PAVEMENT ({mag:.2f}g)")
-            self.lbl_vibe_status.setStyleSheet("color: #00E676; font-weight: bold; font-size: 13px;")
+            set_style(self.lbl_vibe_status, "color: #00E676; font-weight: bold; font-size: 13px;")
 
     def set_disconnected(self) -> None:
         self.lbl_vibe_status.setText("ROAD SURFACE: ACCELEROMETER DISCONNECTED")
-        self.lbl_vibe_status.setStyleSheet("color: #FF334B; font-weight: bold; font-size: 13px;")
+        set_style(self.lbl_vibe_status, "color: #FF334B; font-weight: bold; font-size: 13px;")
         self.lbl_calib_status.setText("CALIBRATION: SENSOR OFFLINE (WAITING FOR ESP32)")
-        self.lbl_calib_status.setStyleSheet("color: #8B949E; font-size: 11px;")
+        set_style(self.lbl_calib_status, "color: #8B949E; font-size: 11px;")

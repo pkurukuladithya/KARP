@@ -99,6 +99,7 @@ def main():
         simulation_mode=sim_mode,
         stream_width=stream_w,
         stream_height=stream_h,
+        passthrough=bool(config.get("video", "camera_passthrough", True)),
     )
     cam_worker.camera_status_changed.connect(window.on_camera_status_changed)
     # Local raw preview (converted in the camera thread) shown only while AI video is absent
@@ -112,6 +113,7 @@ def main():
     # 6. Initialize Return Video Stream Receiver (Laptop -> Pi)
     stream_receiver = RpiStreamReceiver(listen_port=port_rx)
     stream_receiver.frame_received.connect(window.on_video_frame)
+    stream_receiver.frame_received.connect(lambda *_: stream_receiver.frame_consumed())
 
     # 7. Initialize AI Metadata WebSocket Client
     meta_client = MetadataClientWorker(laptop_ip=laptop_ip, port=port_ws)
@@ -142,6 +144,25 @@ def main():
             meta_client.set_laptop_ip(ip)
 
         discovery.brain_found.connect(on_brain_found)
+
+    # Periodic diagnostics in the Pi terminal (paste these lines when reporting lag)
+    pi_stats = {"tx_fps": 0.0, "tx_drop": 0, "rx_fps": 0.0, "lat": 0.0}
+    stream_sender.stats_updated.connect(lambda fps, drop: pi_stats.update(tx_fps=fps, tx_drop=drop))
+    stream_receiver.frame_received.connect(lambda _img, fps, lat: pi_stats.update(rx_fps=fps, lat=lat))
+
+    def log_pi_status():
+        mode = "PASSTHROUGH" if cam_worker._passthrough_active else ("SIM" if sim_mode else "RE-ENCODE")
+        kb = cam_worker._jpeg_bytes_avg / 1024.0
+        logger.info(
+            f"STATUS | camera {cam_worker._capture_fps:4.1f} fps ({mode}{f', {kb:.0f} KB/frame' if kb else ''}) | "
+            f"to laptop {stream_sender.laptop_ip}: {pi_stats['tx_fps']:4.1f} fps | "
+            f"AI video back: {pi_stats['rx_fps']:4.1f} fps, latency {pi_stats['lat']:.0f} ms, "
+            f"GUI-skipped {stream_receiver.skipped_frames} | showing {'AI' if window.ai_video_active() else 'RAW/none'}"
+        )
+
+    status_timer = QTimer()
+    status_timer.timeout.connect(log_pi_status)
+    status_timer.start(5000)
 
     # Only send the local raw preview while the annotated AI stream is not arriving
     preview_timer = QTimer()

@@ -7,6 +7,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel
+from raspberry_pi.gui.styles.style_utils import set_style
 
 
 class AlertBanner(QFrame):
@@ -44,7 +45,7 @@ class AlertBanner(QFrame):
 
         if self._current_level == "CRITICAL":
             self.icon_label.setText("⚠")
-            self.setStyleSheet("""
+            set_style(self, """
                 QFrame#AlertBanner {
                     background-color: #4D0A12;
                     border: 2px solid #FF334B;
@@ -57,7 +58,7 @@ class AlertBanner(QFrame):
             """)
         elif self._current_level == "WARNING":
             self.icon_label.setText("⚡")
-            self.setStyleSheet("""
+            set_style(self, """
                 QFrame#AlertBanner {
                     background-color: #3D2C04;
                     border: 2px solid #FFB703;
@@ -70,7 +71,7 @@ class AlertBanner(QFrame):
             """)
         elif self._current_level == "INFO":
             self.icon_label.setText("ℹ")
-            self.setStyleSheet("""
+            set_style(self, """
                 QFrame#AlertBanner {
                     background-color: #05263B;
                     border: 1px solid #00D2FF;
@@ -82,7 +83,7 @@ class AlertBanner(QFrame):
             """)
         else:
             self.icon_label.setText("✔")
-            self.setStyleSheet("""
+            set_style(self, """
                 QFrame#AlertBanner {
                     background-color: #092B1B;
                     border: 1px solid #00E676;

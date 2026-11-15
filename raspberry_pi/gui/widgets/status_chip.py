@@ -6,6 +6,7 @@ Displays status icon, label, and state (Connected, Disconnected, Warning, Sim).
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath
 from PySide6.QtWidgets import QLabel, QHBoxLayout, QWidget
+from raspberry_pi.gui.styles.style_utils import set_style
 
 
 class StatusChip(QWidget):
@@ -45,16 +46,17 @@ class StatusChip(QWidget):
         self._update_style()
 
     def set_status(self, text: str, state: str) -> None:
-        if self._text != text or self._state != state:
+        if self._text != text:
             self._text = text
-            self._state = state
             self.label.setText(f"{self._title}: {self._text}")
+        if self._state != state:
+            # Restyle only when the colour state changes (stylesheets are expensive on the Pi)
+            self._state = state
             self._update_style()
-            self.update()
 
     def _update_style(self) -> None:
         color = self.COLOR_MAP.get(self._state, QColor(139, 148, 158)).name()
-        self.setStyleSheet(f"""
+        set_style(self, f"""
             QWidget {{
                 background-color: #161B22;
                 border: 1px solid {color};

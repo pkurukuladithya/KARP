@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
 )
+from raspberry_pi.gui.styles.style_utils import set_style
 from shared.config.system_config import get_config
 
 
@@ -32,7 +33,7 @@ class TabSettings(QWidget):
 
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        set_style(scroll, "QScrollArea { border: none; background: transparent; }")
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -44,7 +45,7 @@ class TabSettings(QWidget):
         net_card.setProperty("card", True)
         net_layout = QGridLayout(net_card)
         net_title = QLabel("DISTRIBUTED NETWORK CONFIGURATION")
-        net_title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(net_title, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         net_layout.addWidget(net_title, 0, 0, 1, 4)
 
         net_layout.addWidget(QLabel("Laptop AI IP Address:"), 1, 0)
@@ -76,7 +77,7 @@ class TabSettings(QWidget):
         cam_card.setProperty("card", True)
         cam_layout = QGridLayout(cam_card)
         cam_title = QLabel("CAMERA ACQUISITION & ENCODING")
-        cam_title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(cam_title, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         cam_layout.addWidget(cam_title, 0, 0, 1, 4)
 
         cam_layout.addWidget(QLabel("Camera Device Index:"), 1, 0)
@@ -109,7 +110,7 @@ class TabSettings(QWidget):
         sens_card.setProperty("card", True)
         sens_layout = QGridLayout(sens_card)
         sens_title = QLabel("ESP32 HARDWARE & CALIBRATION")
-        sens_title.setStyleSheet("color: #00D2FF; font-weight: bold; font-size: 14px;")
+        set_style(sens_title, "color: #00D2FF; font-weight: bold; font-size: 14px;")
         sens_layout.addWidget(sens_title, 0, 0, 1, 4)
 
         sens_layout.addWidget(QLabel("ESP32 Serial Port:"), 1, 0)
@@ -141,7 +142,7 @@ class TabSettings(QWidget):
         mode_layout = QHBoxLayout(mode_card)
 
         self.chk_simulation = QCheckBox("ENABLE SIMULATION MODE (No physical camera or ESP32 required)")
-        self.chk_simulation.setStyleSheet("color: #00D2FF; font-weight: bold;")
+        set_style(self.chk_simulation, "color: #00D2FF; font-weight: bold;")
         self.chk_simulation.setChecked(bool(self.config.get("sensors", "simulation_mode", False)))
         mode_layout.addWidget(self.chk_simulation)
 
