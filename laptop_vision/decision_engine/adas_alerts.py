@@ -3,7 +3,7 @@ ADAS Safety Alert Decision Engine.
 Evaluates multi-sensor perception events (LDW, FCW, Pedestrian, Red Light) and determines priority warnings.
 """
 
-from typing import List
+from typing import List, Optional
 from shared.protocols.message_schemas import (
     LaneData,
     DetectedObject,
@@ -20,12 +20,20 @@ class ADASDecisionEngine:
         objects: List[DetectedObject],
         traffic_light: TrafficLightData,
         traffic_signs: List[TrafficSignData],
+        frame_width: Optional[int] = None,
     ) -> List[WarningAlert]:
         alerts: List[WarningAlert] = []
 
+        def in_path(obj: DetectedObject) -> bool:
+            """True if the object's ground contact overlaps the central driving corridor."""
+            if not frame_width:
+                return True
+            left, right = 0.30 * frame_width, 0.70 * frame_width
+            return obj.bbox[2] >= left and obj.bbox[0] <= right
+
         # 1. Forward Collision Warning (FCW)
         for obj in objects:
-            if obj.class_name in ("car", "truck", "bus", "motorcycle"):
+            if obj.class_name in ("car", "truck", "bus", "motorcycle") and in_path(obj):
                 if obj.ttc_sec is not None and obj.ttc_sec <= 2.2:
                     alerts.append(
                         WarningAlert(
@@ -46,7 +54,7 @@ class ADASDecisionEngine:
 
         # 2. Pedestrian Collision Hazard
         for obj in objects:
-            if obj.class_name in ("pedestrian", "bicycle"):
+            if obj.class_name in ("pedestrian", "bicycle") and in_path(obj):
                 if obj.estimated_distance_m is not None and obj.estimated_distance_m <= 15.0:
                     alerts.append(
                         WarningAlert(

@@ -34,15 +34,23 @@ class RpiStreamSender(QThread):
         self.port = port
         self.quality = quality
         self._running = True
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=3)
+        self._frame_queue: queue.Queue = queue.Queue(maxsize=2)
         self._dropped_frames = 0
+        self._retarget = False
+
+    def set_laptop_ip(self, ip: str) -> None:
+        """Thread-safe: switch the laptop target (e.g. after LAN discovery)."""
+        if ip and ip != self.laptop_ip:
+            logger.info(f"Laptop video target changed {self.laptop_ip} -> {ip}")
+            self.laptop_ip = ip
+            self._retarget = True
 
     def stop(self) -> None:
         self._running = False
         self.wait(1000)
 
     def push_frame(self, frame_bgr: np.ndarray, frame_id: int, timestamp_ms: int) -> None:
-        """Pushes a captured frame into the transmit queue, dropping stale frames if queue is full."""
+        """Pushes a captured frame (called from the camera thread); drops the oldest if full."""
         try:
             self._frame_queue.put_nowait((frame_bgr, frame_id, timestamp_ms))
         except queue.Full:
@@ -62,7 +70,13 @@ class RpiStreamSender(QThread):
         frame_count = 0
         last_stat_time = time.time()
 
+        last_fail_log = 0.0
         while self._running:
+            if self._retarget and sock is not None:
+                sock.close()
+                sock = None
+            self._retarget = False
+
             # Reconnect if needed
             if sock is None:
                 try:
@@ -74,6 +88,12 @@ class RpiStreamSender(QThread):
                     self.connection_changed.emit(True)
                     logger.info(f"Connected to Laptop Video Receiver on {self.laptop_ip}:{self.port}")
                 except Exception as e:
+                    if time.time() - last_fail_log > 10.0:
+                        logger.warning(
+                            f"Cannot reach laptop AI video port {self.laptop_ip}:{self.port} ({e}). "
+                            "Is laptop_vision/main.py running and the firewall open? Retrying..."
+                        )
+                        last_fail_log = time.time()
                     if is_connected:
                         is_connected = False
                         self.connection_changed.emit(False)

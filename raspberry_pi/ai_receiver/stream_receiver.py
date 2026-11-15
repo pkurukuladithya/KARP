@@ -17,6 +17,8 @@ from shared.protocols.framing import (
     KARP_FRAME_MAGIC,
     KARP_HEADER_SIZE,
     decode_frame_header,
+    ms32_age,
+    now_ms32,
 )
 
 logger = logging.getLogger("KARP.StreamReceiver")
@@ -101,15 +103,14 @@ class RpiStreamReceiver(QThread):
                     frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
                     if frame_bgr is not None:
-                        # Convert BGR to RGB for PySide6 QImage
-                        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-                        h, w, ch = frame_rgb.shape
-                        bytes_per_line = ch * w
-                        qimage = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
+                        # Convert in this worker thread to Format_RGB32 (fastest to paint)
+                        frame_bgra = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2BGRA)
+                        h, w = frame_bgra.shape[:2]
+                        qimage = QImage(frame_bgra.data, w, h, 4 * w, QImage.Format_RGB32).copy()
 
-                        # Calculate FPS and Latency
-                        now_ms = int(time.time() * 1000)
-                        latency_ms = max(0.0, float(now_ms - header.timestamp_ms))
+                        # Glass-to-glass latency: header carries the Pi's own capture time
+                        age = ms32_age(now_ms32(), header.timestamp_ms)
+                        latency_ms = float(age) if age < 60_000 else 0.0
 
                         frame_count += 1
                         now = time.time()

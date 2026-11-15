@@ -49,14 +49,11 @@ def main():
     laptop_proc = subprocess.Popen(
         laptop_cmd,
         cwd=str(ROOT_DIR),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
+        # Inherit the console: an undrained PIPE fills up and blocks the AI process
     )
 
-    # Allow AI service to initialize socket listeners
-    time.sleep(1.5)
+    # Allow AI service to load the YOLO model onto the GPU and open its sockets
+    time.sleep(6.0)
 
     # 2. Start Raspberry Pi HMI in foreground
     pi_cmd = [
@@ -64,6 +61,7 @@ def main():
         str(ROOT_DIR / "raspberry_pi" / "main.py"),
         "--laptop-ip", "127.0.0.1",
         "--simulation",
+        "--no-discovery",
     ]
     if args.fullscreen:
         pi_cmd.append("--fullscreen")

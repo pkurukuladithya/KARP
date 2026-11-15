@@ -25,6 +25,8 @@ class SystemConfig:
         self._lock = threading.Lock()
         self._user_path = config_path or USER_CONFIG_PATH
         self._data: Dict[str, Any] = {}
+        # Only values explicitly persisted by the user (GUI). Never contains CLI/env overrides.
+        self._user_data: Dict[str, Any] = {}
         self.load()
 
     @classmethod
@@ -48,20 +50,21 @@ class SystemConfig:
             else:
                 self._data = {}
 
-            # 2. Overlay user config if present
+            # 2. Read .env file if present in project root, then env var overrides
+            self._load_dotenv_file()
+            self._apply_env_overrides()
+
+            # 3. Overlay persisted user config last (settings saved from the GUI win)
+            self._user_data = {}
             if self._user_path.exists():
                 try:
                     with open(self._user_path, "r", encoding="utf-8") as f:
                         user_data = json.load(f)
+                    if isinstance(user_data, dict):
+                        self._user_data = user_data
                         self._deep_update(self._data, user_data)
                 except Exception as e:
                     logger.warning(f"Failed to load user config {self._user_path}: {e}")
-
-            # 3. Read .env file if present in project root
-            self._load_dotenv_file()
-
-            # 4. Overlay Environment Variables
-            self._apply_env_overrides()
 
     def _load_dotenv_file(self) -> None:
         """Reads .env file from project root and loads variables into os.environ."""
@@ -93,7 +96,13 @@ class SystemConfig:
             "KARP_VIDEO_WIDTH": ("video", "width", int),
             "KARP_VIDEO_HEIGHT": ("video", "height", int),
             "KARP_VIDEO_FPS": ("video", "fps", int),
+            "KARP_STREAM_WIDTH": ("video", "stream_width", int),
+            "KARP_STREAM_HEIGHT": ("video", "stream_height", int),
+            "KARP_JPEG_QUALITY": ("video", "jpeg_quality", int),
             "KARP_CONFIDENCE_THRESHOLD": ("vision", "confidence_threshold", float),
+            "KARP_IOU_THRESHOLD": ("vision", "iou_threshold", float),
+            "KARP_YOLO_MODEL": ("vision", "model", str),
+            "KARP_USE_CUDA": ("vision", "use_cuda", lambda v: v.lower() in ("true", "1", "yes")),
             "KARP_ESP32_PORT": ("sensors", "esp32_port", str),
             "KARP_ESP32_BAUDRATE": ("sensors", "baud_rate", int),
             "KARP_VIBRATION_THRESHOLD": ("sensors", "vibration_threshold_g", float),
@@ -125,6 +134,8 @@ class SystemConfig:
             if section not in self._data:
                 self._data[section] = {}
             self._data[section][key] = value
+            if save_to_disk:
+                self._user_data.setdefault(section, {})[key] = value
 
         if save_to_disk:
             self.save()
@@ -134,6 +145,8 @@ class SystemConfig:
             if section not in self._data:
                 self._data[section] = {}
             self._data[section].update(values)
+            if save_to_disk:
+                self._user_data.setdefault(section, {}).update(values)
 
         if save_to_disk:
             self.save()
@@ -150,7 +163,8 @@ class SystemConfig:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with open(tmp_path, "w", encoding="utf-8") as f:
-                    json.dump(self._data, f, indent=2)
+                    # target_path given = explicit full export; default = user overrides only
+                    json.dump(self._data if target_path else self._user_data, f, indent=2)
                 tmp_path.replace(path)
                 logger.info(f"Configuration saved to {path}")
                 return True

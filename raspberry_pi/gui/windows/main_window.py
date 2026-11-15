@@ -3,6 +3,7 @@ Main Application Window for KARP ADAS Raspberry Pi HMI.
 Integrates Header status bar, dynamic alert notification bar, and 7 navigation tabs.
 """
 
+import time
 from typing import Optional
 from PySide6.QtCore import Qt, QSize, Signal, Slot
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut, QImage
@@ -75,6 +76,11 @@ class MainWindow(QMainWindow):
 
         self._ai_connected = False
         self._last_ai_frame_time = 0.0
+        self._last_table_update = 0.0
+
+    def ai_video_active(self, max_age_s: float = 1.0) -> bool:
+        """True while annotated frames from the laptop are arriving."""
+        return (time.time() - self._last_ai_frame_time) < max_age_s
 
     def _init_header_bar(self, layout: QVBoxLayout) -> None:
         header_frame = QFrame()
@@ -164,13 +170,15 @@ class MainWindow(QMainWindow):
     # Slot updates from background worker threads
     @Slot(QImage, float, float)
     def on_video_frame(self, image: QImage, fps: float, latency_ms: float) -> None:
-        """Called when return annotated video stream is received from Laptop AI co-processor."""
-        import time
-        self._ai_connected = True
+        """Annotated video returned by the Laptop AI co-processor."""
         self._last_ai_frame_time = time.time()
+        self._update_video_widgets(image, fps, latency_ms)
+        self.chip_cam.set_status(f"AI {fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
+
+    def _update_video_widgets(self, image: QImage, fps: float, latency_ms: float) -> None:
+        # Only the visible tab is repainted by Qt; updating hidden widgets is cheap.
         self.tab_overview.video_widget.update_frame(image, fps, latency_ms)
         self.tab_live_vision.video_widget.update_frame(image, fps, latency_ms)
-        self.chip_cam.set_status(f"{fps:.0f} FPS", StatusChip.STATE_OK if fps >= 15 else StatusChip.STATE_WARN)
 
     @Slot(bool, str)
     def on_camera_status_changed(self, is_open: bool, msg: str) -> None:
@@ -178,23 +186,17 @@ class MainWindow(QMainWindow):
             self.chip_cam.set_status("ONLINE", StatusChip.STATE_OK)
         else:
             self.chip_cam.set_status("CLOSED", StatusChip.STATE_ERROR)
-            if not self._ai_connected:
+            if not self.ai_video_active():
                 self.tab_overview.video_widget.set_offline_status("CAMERA CLOSED / NO VIDEO SIGNAL")
                 self.tab_live_vision.video_widget.set_offline_status("CAMERA CLOSED / NO VIDEO SIGNAL")
 
-    @Slot(object, int, int)
-    def on_local_camera_frame(self, frame_bgr, frame_id: int, timestamp_ms: int) -> None:
-        """Called by local camera worker. If Laptop AI is offline, display raw camera feed with clear notice!"""
-        import time
-        if not self._ai_connected or (time.time() - self._last_ai_frame_time > 1.5):
-            import cv2
-            h, w, ch = frame_bgr.shape
-            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            bytes_per_line = ch * w
-            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format_RGB888).copy()
-            self.tab_overview.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
-            self.tab_live_vision.video_widget.update_frame(qimg, fps=30.0, latency_ms=0.0)
-            self.chip_cam.set_status("30 FPS (RAW)", StatusChip.STATE_OK)
+    @Slot(QImage, float)
+    def on_local_preview(self, image: QImage, capture_fps: float) -> None:
+        """Raw local camera preview (already converted in the camera thread). Used only while AI video is absent."""
+        if self.ai_video_active():
+            return
+        self._update_video_widgets(image, capture_fps, 0.0)
+        self.chip_cam.set_status(f"{capture_fps:.0f} FPS (RAW)", StatusChip.STATE_WARN)
 
     @Slot(object)
     def on_ai_telemetry(self, telemetry: AiTelemetry) -> None:
@@ -208,7 +210,10 @@ class MainWindow(QMainWindow):
             telemetry.performance.pipeline_latency_ms,
             telemetry.performance.dropped_frames,
         )
-        self.tab_live_vision.update_objects_table(telemetry.objects)
+        now = time.time()
+        if now - self._last_table_update >= 0.2:  # 5 Hz is plenty for a table; saves Pi CPU
+            self._last_table_update = now
+            self.tab_live_vision.update_objects_table(telemetry.objects)
 
         # Update lane and road cues
         self.tab_overview.update_lane_status(

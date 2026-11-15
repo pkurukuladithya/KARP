@@ -1,19 +1,39 @@
 """
 Camera Acquisition Worker for Raspberry Pi.
-Captures USB video stream from /dev/video0 or renders dynamic synthetic road video in simulation mode.
+Captures the USB camera (V4L2 + MJPG, 1-frame buffer for low latency) or renders a
+synthetic road in simulation mode.
+
+Frames are delivered to "sinks" (e.g. the network sender) directly from this
+thread, so video never waits on the GUI event loop. A throttled, pre-converted
+QImage preview is emitted only while the laptop AI stream is unavailable.
 """
 
 from __future__ import annotations
+import logging
 import math
+import sys
 import time
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 from PySide6.QtCore import QThread, Signal
+from PySide6.QtGui import QImage
 import cv2
 import numpy as np
 
+logger = logging.getLogger("KARP.Camera")
+
+FrameSink = Callable[[np.ndarray, int, int], None]
+
+
+def bgr_to_qimage(frame_bgr: np.ndarray) -> QImage:
+    """BGR ndarray -> QImage in Format_RGB32 (the fastest format for QPainter to draw)."""
+    bgra = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2BGRA)
+    h, w = bgra.shape[:2]
+    return QImage(bgra.data, w, h, 4 * w, QImage.Format_RGB32).copy()
+
 
 class CameraCaptureWorker(QThread):
-    frame_captured = Signal(np.ndarray, int, int)  # (frame_bgr, frame_id, timestamp_ms)
+    frame_captured = Signal(np.ndarray, int, int)  # kept for compatibility (not used by the HMI)
+    preview_ready = Signal(QImage, float)  # (qimage, capture_fps) - local raw preview
     camera_status_changed = Signal(bool, str)
 
     def __init__(
@@ -23,6 +43,8 @@ class CameraCaptureWorker(QThread):
         height: int = 720,
         fps: int = 30,
         simulation_mode: bool = False,
+        stream_width: Optional[int] = None,
+        stream_height: Optional[int] = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -31,66 +53,108 @@ class CameraCaptureWorker(QThread):
         self.height = height
         self.fps = max(1, fps)
         self.simulation_mode = simulation_mode
+        # Output size sent to the laptop / preview. Defaults to capture size.
+        self.out_w = stream_width or width
+        self.out_h = stream_height or height
         self._running = True
         self._frame_id = 0
+        self._sinks: List[FrameSink] = []
+        self.preview_enabled = True
+        self.preview_max_fps = 15.0
+        self._last_preview = 0.0
+        self._capture_fps = 0.0
+
+    def add_frame_sink(self, sink: FrameSink) -> None:
+        """Registers a callable invoked from the camera thread for every frame."""
+        self._sinks.append(sink)
 
     def stop(self) -> None:
         self._running = False
-        self.wait(1000)
+        self.wait(2000)
+
+    # ------------------------------------------------------------------ camera
+    def _open_camera(self) -> Optional[cv2.VideoCapture]:
+        if sys.platform.startswith("linux"):
+            cap = cv2.VideoCapture(self.camera_index, cv2.CAP_V4L2)
+        else:
+            cap = cv2.VideoCapture(self.camera_index)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        # MJPG must be requested BEFORE the resolution. Raw YUYV at 720p is limited
+        # to ~7-10 fps by USB 2.0 bandwidth on most webcams -> laggy video.
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        cap.set(cv2.CAP_PROP_FPS, self.fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # always deliver the newest frame
+
+        fourcc = int(cap.get(cv2.CAP_PROP_FOURCC))
+        fourcc_str = "".join(chr((fourcc >> (8 * i)) & 0xFF) for i in range(4))
+        logger.info(
+            f"Camera #{self.camera_index} opened: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x"
+            f"{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))} @ {cap.get(cv2.CAP_PROP_FPS):.0f} fps, format {fourcc_str!r}"
+        )
+        return cap
+
+    def _deliver(self, frame: np.ndarray) -> None:
+        if frame.shape[1] != self.out_w or frame.shape[0] != self.out_h:
+            frame = cv2.resize(frame, (self.out_w, self.out_h), interpolation=cv2.INTER_AREA)
+        self._frame_id += 1
+        ts_ms = int(time.time() * 1000)
+
+        for sink in self._sinks:
+            try:
+                sink(frame, self._frame_id, ts_ms)
+            except Exception as e:
+                logger.debug(f"Frame sink error: {e}")
+
+        now = time.time()
+        if self.preview_enabled and now - self._last_preview >= 1.0 / self.preview_max_fps:
+            self._last_preview = now
+            self.preview_ready.emit(bgr_to_qimage(frame), self._capture_fps)
 
     def run(self) -> None:
         cap: Optional[cv2.VideoCapture] = None
         target_interval = 1.0 / self.fps
         t_sim = 0.0
+        frame_count = 0
+        last_fps_time = time.time()
 
         while self._running:
-            # 1. Hardware Camera Mode (default)
+            loop_start = time.time()
             if not self.simulation_mode:
-                if cap is None or not cap.isOpened():
-                    cap = cv2.VideoCapture(self.camera_index)
-                    if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                        cap.set(cv2.CAP_PROP_FPS, self.fps)
-                        self.camera_status_changed.emit(True, f"Camera #{self.camera_index} Opened")
-                    else:
-                        self.camera_status_changed.emit(False, f"Camera #{self.camera_index} Closed / Not Connected")
-                        if cap:
-                            cap.release()
-                            cap = None
+                if cap is None:
+                    cap = self._open_camera()
+                    if cap is None:
+                        self.camera_status_changed.emit(False, f"Camera #{self.camera_index} Not Connected")
                         time.sleep(1.0)
                         continue
+                    self.camera_status_changed.emit(True, f"Camera #{self.camera_index} Opened")
 
-                ret, raw_frame = cap.read()
-                if ret and raw_frame is not None:
-                    self._frame_id += 1
-                    ts_ms = int(time.time() * 1000)
-                    if raw_frame.shape[1] != self.width or raw_frame.shape[0] != self.height:
-                        frame = cv2.resize(raw_frame, (self.width, self.height))
-                    else:
-                        frame = raw_frame
-                    self.frame_captured.emit(frame, self._frame_id, ts_ms)
-                else:
+                ret, frame = cap.read()
+                if not ret or frame is None:
                     self.camera_status_changed.emit(False, "Camera frame read failed. Reconnecting...")
-                    if cap:
-                        cap.release()
-                        cap = None
+                    cap.release()
+                    cap = None
                     time.sleep(0.5)
-
-            # 2. Simulation Mode (only if explicitly enabled via --simulation)
+                    continue
+                self._deliver(frame)
             else:
-                start_time = time.time()
-                self._frame_id += 1
-                ts_ms = int(time.time() * 1000)
                 t_sim += target_interval
-                frame = self._render_synthetic_road_frame(t_sim)
-                self.frame_captured.emit(frame, self._frame_id, ts_ms)
-                elapsed = time.time() - start_time
-                sleep_time = target_interval - elapsed
+                self._deliver(self._render_synthetic_road_frame(t_sim))
+                sleep_time = target_interval - (time.time() - loop_start)
                 if sleep_time > 0:
                     time.sleep(sleep_time)
 
-        if cap and cap.isOpened():
+            frame_count += 1
+            now = time.time()
+            if now - last_fps_time >= 1.0:
+                self._capture_fps = frame_count / (now - last_fps_time)
+                frame_count = 0
+                last_fps_time = now
+
+        if cap is not None:
             cap.release()
         self.camera_status_changed.emit(False, "Camera Closed")
 

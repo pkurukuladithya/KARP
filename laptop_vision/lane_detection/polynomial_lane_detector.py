@@ -19,21 +19,35 @@ class PolynomialLaneDetector(LaneDetectorBase):
         self,
         img_width: int = 1280,
         img_height: int = 720,
-        ym_per_pix: float = 30.0 / 720.0,  # Meters per pixel in Y dimension
-        xm_per_pix: float = 3.7 / 700.0,   # Meters per pixel in X dimension (standard 3.7m highway lane)
+        work_width: int = 640,
     ):
-        self.img_w = img_width
-        self.img_h = img_height
-        self.ym_per_pix = ym_per_pix
-        self.xm_per_pix = xm_per_pix
+        # Lane fitting runs at a reduced working resolution (results are scaled back),
+        # which cuts CPU time ~2-3x with no practical loss for lane geometry.
+        self.work_width = work_width
+        self._in_size = (0, 0)
         self.ldw_evaluator = DepartureWarningEvaluator(departure_threshold_m=0.38)
 
-        # Sliding window parameters
+        # Sliding window parameters (margin/minpix scaled with width in _setup_geometry)
         self.nwindows = 9
-        self.margin = 100
-        self.minpix = 50
+        self._setup_geometry(img_width, img_height)
 
-        # Perspective Transform Points (Trapezoid -> Rectangle)
+        # Smoothing filter across consecutive frames
+        self._prev_left_fit: Optional[np.ndarray] = None
+        self._prev_right_fit: Optional[np.ndarray] = None
+
+    def _setup_geometry(self, img_width: int, img_height: int) -> None:
+        """(Re)computes perspective transforms and pixel scales for the given frame size."""
+        self.img_w = img_width
+        self.img_h = img_height
+        self.ym_per_pix = 30.0 / img_height
+        # Warped lane spans ~50% of the width (0.25w .. 0.75w) for a 3.7 m lane
+        self.xm_per_pix = 3.7 / (0.5 * img_width)
+        scale = img_width / 1280.0
+        self.margin = max(40, int(100 * scale))
+        self.minpix = max(20, int(50 * scale * scale))
+        self.min_lane_px = max(60, int(150 * scale * scale))
+        self.min_base_sep = int(200 * scale)
+
         self._src_pts = np.float32([
             [int(img_width * 0.18), img_height],
             [int(img_width * 0.44), int(img_height * 0.62)],
@@ -46,18 +60,22 @@ class PolynomialLaneDetector(LaneDetectorBase):
             [int(img_width * 0.75), 0],
             [int(img_width * 0.75), img_height],
         ])
-
         self.M = cv2.getPerspectiveTransform(self._src_pts, self._dst_pts)
         self.M_inv = cv2.getPerspectiveTransform(self._dst_pts, self._src_pts)
-
-        # Smoothing filter across consecutive frames
-        self._prev_left_fit: Optional[np.ndarray] = None
-        self._prev_right_fit: Optional[np.ndarray] = None
+        self._prev_left_fit = None
+        self._prev_right_fit = None
 
     def detect(self, frame_bgr: np.ndarray) -> LaneData:
-        h, w = frame_bgr.shape[:2]
-        if w != self.img_w or h != self.img_h:
-            frame_bgr = cv2.resize(frame_bgr, (self.img_w, self.img_h))
+        in_h, in_w = frame_bgr.shape[:2]
+        if (in_w, in_h) != self._in_size:
+            self._in_size = (in_w, in_h)
+            ww = min(self.work_width, in_w)
+            wh = int(round(in_h * ww / in_w))
+            self._setup_geometry(ww, wh)
+        if in_w != self.img_w:
+            frame_bgr = cv2.resize(frame_bgr, (self.img_w, self.img_h), interpolation=cv2.INTER_AREA)
+        sx = in_w / float(self.img_w)
+        sy = in_h / float(self.img_h)
 
         # 1. Color & Gradient Thresholding
         binary_warped = self._preprocess_and_warp(frame_bgr)
@@ -91,6 +109,9 @@ class PolynomialLaneDetector(LaneDetectorBase):
 
         # 5. Generate Perspective Projection Points
         left_pts, right_pts = self._generate_lane_points(left_fit, right_fit)
+        if sx != 1.0 or sy != 1.0:
+            left_pts = [(int(x * sx), int(y * sy)) for x, y in left_pts]
+            right_pts = [(int(x * sx), int(y * sy)) for x, y in right_pts]
 
         return LaneData(
             detected=True,
@@ -103,33 +124,21 @@ class PolynomialLaneDetector(LaneDetectorBase):
         )
 
     def _preprocess_and_warp(self, frame_bgr: np.ndarray) -> np.ndarray:
-        # Convert to HLS & LAB
+        """HLS-S / LAB-B colour + Sobel-X gradient thresholds, then bird's-eye warp (all OpenCV-vectorised)."""
         hls = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HLS)
-        s_channel = hls[:, :, 2]
         l_channel = hls[:, :, 1]
+        s_channel = hls[:, :, 2]
+        b_channel = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)[:, :, 2]  # yellow lines
 
-        lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
-        b_channel = lab[:, :, 2]  # Yellow lane line isolation
+        abs_sobelx = cv2.convertScaleAbs(cv2.Sobel(l_channel, cv2.CV_16S, 1, 0))
+        max_sobel = max(1.0, float(cv2.minMaxLoc(abs_sobelx)[1]))
+        scaled_sobel = cv2.convertScaleAbs(abs_sobelx, alpha=255.0 / max_sobel)
+        sxbinary = cv2.inRange(scaled_sobel, 25, 120)
 
-        # Sobel X Edge Gradient
-        sobelx = cv2.Sobel(l_channel, cv2.CV_64F, 1, 0)
-        abs_sobelx = np.absolute(sobelx)
-        max_sobel = np.max(abs_sobelx) if np.max(abs_sobelx) > 0 else 1.0
-        scaled_sobel = np.uint8(255 * abs_sobelx / max_sobel)
+        color_binary = cv2.bitwise_or(cv2.inRange(s_channel, 100, 255), cv2.inRange(b_channel, 155, 255))
+        combined = cv2.bitwise_or(sxbinary, color_binary)
 
-        sxbinary = np.zeros_like(scaled_sobel)
-        sxbinary[(scaled_sobel >= 25) & (scaled_sobel <= 120)] = 1
-
-        # White / Yellow Thresholding
-        color_binary = np.zeros_like(s_channel)
-        color_binary[((s_channel >= 100) & (s_channel <= 255)) | (b_channel >= 155)] = 1
-
-        combined = np.zeros_like(s_channel)
-        combined[(sxbinary == 1) | (color_binary == 1)] = 255
-
-        # Perspective Warp to Bird's-Eye View
-        warped = cv2.warpPerspective(combined, self.M, (self.img_w, self.img_h), flags=cv2.INTER_LINEAR)
-        return warped
+        return cv2.warpPerspective(combined, self.M, (self.img_w, self.img_h), flags=cv2.INTER_LINEAR)
 
     def _fit_polynomial(self, binary_warped: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], float]:
         # Take histogram of bottom half
@@ -139,7 +148,7 @@ class PolynomialLaneDetector(LaneDetectorBase):
         rightx_base = np.argmax(histogram[midpoint:]) + midpoint
 
         # Check if peaks are distinct and plausible
-        if leftx_base < 50 or rightx_base > (self.img_w - 50) or (rightx_base - leftx_base) < 200:
+        if leftx_base < 50 or rightx_base > (self.img_w - 50) or (rightx_base - leftx_base) < self.min_base_sep:
             return None, None, 0.0
 
         window_height = int(binary_warped.shape[0] // self.nwindows)
@@ -185,7 +194,7 @@ class PolynomialLaneDetector(LaneDetectorBase):
         left_lane_inds = np.concatenate(left_lane_inds)
         right_lane_inds = np.concatenate(right_lane_inds)
 
-        if len(left_lane_inds) < 150 or len(right_lane_inds) < 150:
+        if len(left_lane_inds) < self.min_lane_px or len(right_lane_inds) < self.min_lane_px:
             return None, None, 0.0
 
         leftx = nonzerox[left_lane_inds]

@@ -34,6 +34,12 @@ class MetadataClientWorker(QThread):
         self._running = False
         self.wait(1000)
 
+    def set_laptop_ip(self, ip: str) -> None:
+        """Switch target laptop; takes effect on the next (re)connect attempt."""
+        if ip and ip != self.laptop_ip:
+            logger.info(f"Laptop metadata target changed {self.laptop_ip} -> {ip}")
+            self.laptop_ip = ip
+
     def send_config_update(self, config_dict: dict) -> None:
         msg = json.dumps({"type": "update_config", "settings": config_dict})
         self._tx_queue.put(msg)
@@ -42,11 +48,14 @@ class MetadataClientWorker(QThread):
         asyncio.run(self._async_loop())
 
     async def _async_loop(self) -> None:
-        uri = f"ws://{self.laptop_ip}:{self.port}"
-
+        was_connected = False
         while self._running:
+            uri = f"ws://{self.laptop_ip}:{self.port}"
             try:
-                async with websockets.connect(uri, ping_interval=5, ping_timeout=10) as ws:
+                async with websockets.connect(
+                    uri, ping_interval=5, ping_timeout=10, open_timeout=3, max_size=4 * 1024 * 1024
+                ) as ws:
+                    was_connected = True
                     self.connection_changed.emit(True)
                     logger.info(f"Connected to AI Metadata WebSocket at {uri}")
 
@@ -62,8 +71,15 @@ class MetadataClientWorker(QThread):
                     for task in pending:
                         task.cancel()
 
+                if was_connected:
+                    logger.info("AI metadata WebSocket disconnected")
+                    self.connection_changed.emit(False)
+                    was_connected = False
             except Exception as e:
-                self.connection_changed.emit(False)
+                if was_connected:
+                    self.connection_changed.emit(False)
+                    was_connected = False
+                logger.debug(f"WebSocket connect to {uri} failed: {e}")
                 await asyncio.sleep(2.0)
 
         self.connection_changed.emit(False)

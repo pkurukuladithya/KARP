@@ -95,8 +95,16 @@ class Esp32SerialWorker(QThread):
         self.connection_changed.emit(False)
 
     def _process_line(self, line: str) -> None:
-        telemetry = SensorTelemetry.from_json(line)
-        if telemetry:
-            self.telemetry_received.emit(telemetry)
-        else:
+        try:
+            msg = json.loads(line)
+        except Exception:
             self.log_message.emit(f"[SERIAL RAW] {line}")
+            return
+        if not isinstance(msg, dict):
+            return
+        msg_type = msg.get("type")
+        if msg_type == "sensor_telemetry":
+            self.telemetry_received.emit(SensorTelemetry.from_dict(msg))
+        else:
+            # ack / boot_status / other: log only, never treat as sensor data
+            self.log_message.emit(f"[ESP32 {msg_type}] {line}")

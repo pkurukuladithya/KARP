@@ -42,8 +42,9 @@ class VideoWidget(QWidget):
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        # No SmoothPixmapTransform: bilinear scaling of every video frame in software
+        # is one of the most expensive operations on the Pi 4's CPU.
+        painter.setRenderHint(QPainter.Antialiasing, False)
 
         # Clear background
         painter.fillRect(self.rect(), QColor(7, 9, 14))

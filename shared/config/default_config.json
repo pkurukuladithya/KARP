@@ -4,7 +4,8 @@
     "pi_ip": "127.0.0.1",
     "video_port_pi_to_laptop": 5000,
     "video_port_laptop_to_pi": 5001,
-    "metadata_ws_port": 8765
+    "metadata_ws_port": 8765,
+    "discovery_port": 5005
   },
   "video": {
     "camera_index": 0,
@@ -12,7 +13,9 @@
     "height": 720,
     "fps": 30,
     "bitrate": 2500000,
-    "jpeg_quality": 80
+    "jpeg_quality": 75,
+    "stream_width": 960,
+    "stream_height": 540
   },
   "vision": {
     "confidence_threshold": 0.45,
@@ -21,12 +24,15 @@
     "enable_distance_estimation": true,
     "camera_height_m": 1.25,
     "camera_pitch_deg": 2.0,
-    "focal_length_px": 920.0
+    "focal_length_px": 920.0,
+    "model": "yolo11s.pt",
+    "use_cuda": true,
+    "imgsz": 640
   },
   "sensors": {
     "esp32_port": "/dev/ttyUSB0",
     "baud_rate": 115200,
-    "vibration_threshold_g": 2.20,
+    "vibration_threshold_g": 2.2,
     "filter_cutoff_hz": 5.0,
     "update_hz": 20,
     "simulation_mode": false

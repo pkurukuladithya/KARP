@@ -7,10 +7,13 @@ visual annotation, return video broadcasting, and telemetry dispatch.
 from __future__ import annotations
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 import numpy as np
 
 from shared.config.system_config import get_config
+from shared.protocols.discovery import BrainBeacon, DISCOVERY_PORT
+from shared.protocols.framing import now_ms32, ms32_age
 from shared.protocols.message_schemas import (
     AiTelemetry,
     PerformanceStats,
@@ -22,7 +25,6 @@ from shared.protocols.message_schemas import (
 from laptop_vision.camera_receiver.stream_receiver import CameraStreamReceiver
 from laptop_vision.lane_detection.polynomial_lane_detector import PolynomialLaneDetector
 from laptop_vision.object_detection.object_detector import ADASObjectDetector
-from laptop_vision.traffic_sign_detection.sign_detector import TrafficSignDetector
 from laptop_vision.traffic_light_detection.traffic_light_classifier import TrafficLightClassifier
 from laptop_vision.decision_engine.adas_alerts import ADASDecisionEngine
 from laptop_vision.visual_annotator.annotator import VisualAnnotator
@@ -51,7 +53,16 @@ class ADASPipelineOrchestrator:
             port=rx_port,
             on_client_connected=self._on_pi_stream_connected,
         )
-        self.video_broadcaster = StreamBroadcaster(target_ip=tx_target_ip, port=tx_port)
+        self.video_broadcaster = StreamBroadcaster(
+            target_ip=tx_target_ip,
+            port=tx_port,
+            quality=int(self.config.get("video", "jpeg_quality", 75)),
+        )
+        self.beacon = BrainBeacon(
+            video_port=rx_port,
+            ws_port=ws_port,
+            port=int(self.config.get("network", "discovery_port", DISCOVERY_PORT)),
+        )
         self.ws_server = TelemetryWebSocketServer(
             host="0.0.0.0",
             port=ws_port,
@@ -60,18 +71,25 @@ class ADASPipelineOrchestrator:
 
         # 2. Initialize Computer Vision & AI Modules
         self.lane_detector = PolynomialLaneDetector(
-            img_width=int(self.config.get("video", "width", 1280)),
-            img_height=int(self.config.get("video", "height", 720)),
+            img_width=int(self.config.get("video", "stream_width", 960)),
+            img_height=int(self.config.get("video", "stream_height", 540)),
         )
         self.object_detector = ADASObjectDetector(
+            model_path=str(self.config.get("vision", "model", "yolo11s.pt")),
             confidence_threshold=float(self.config.get("vision", "confidence_threshold", 0.45)),
             iou_threshold=float(self.config.get("vision", "iou_threshold", 0.45)),
-            use_cuda=use_cuda,
+            use_cuda=use_cuda and bool(self.config.get("vision", "use_cuda", True)),
+            imgsz=int(self.config.get("vision", "imgsz", 640)),
+            camera_height_m=float(self.config.get("vision", "camera_height_m", 1.25)),
+            camera_pitch_deg=float(self.config.get("vision", "camera_pitch_deg", 2.0)),
+            focal_length_px=float(self.config.get("vision", "focal_length_px", 920.0)),
         )
-        self.sign_detector = TrafficSignDetector()
         self.traffic_light_classifier = TrafficLightClassifier()
         self.decision_engine = ADASDecisionEngine()
         self.annotator = VisualAnnotator()
+
+        # Lane fitting (CPU/OpenCV) runs concurrently with YOLO (GPU); both release the GIL
+        self._lane_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LaneWorker")
 
         # Performance tracking metrics
         self._inference_fps = 0.0
@@ -85,6 +103,7 @@ class ADASPipelineOrchestrator:
         self.camera_receiver.start()
         self.video_broadcaster.start()
         self.ws_server.start()
+        self.beacon.start()
 
     def stop(self) -> None:
         self.running = False
@@ -92,6 +111,8 @@ class ADASPipelineOrchestrator:
         self.camera_receiver.stop()
         self.video_broadcaster.stop()
         self.ws_server.stop()
+        self.beacon.stop()
+        self._lane_executor.shutdown(wait=False)
 
     def step(self, timeout: float = 0.05) -> Optional[AiTelemetry]:
         """Executes one perception cycle on the latest available frame."""
@@ -102,31 +123,40 @@ class ADASPipelineOrchestrator:
         frame_bgr, frame_id, rx_timestamp_ms = frame_tuple
         start_time = time.time()
 
-        # 1. Lane Boundary & Curvature Detection
-        lanes = self.lane_detector.detect(frame_bgr)
-
-        # 2. Multi-Class Object Detection & SORT Tracking
+        # 1+2. Lane detection (CPU thread) in parallel with YOLO detection + SORT (GPU)
+        lane_future = self._lane_executor.submit(self.lane_detector.detect, frame_bgr)
         objects = self.object_detector.detect_and_track(frame_bgr, rx_timestamp_ms)
+        lanes = lane_future.result()
 
-        # 3. Traffic Sign Recognition
-        signs = self.sign_detector.detect_signs(frame_bgr)
+        # 3. Traffic Sign Recognition (YOLO 'stop sign' class)
+        signs = [
+            TrafficSignData(type="STOP", confidence=o.confidence, bbox=o.bbox)
+            for o in objects
+            if o.class_name == "stop sign"
+        ]
 
         # 4. Traffic Light State Classification
         traffic_light = TrafficLightData(detected=False, state="UNKNOWN", confidence=0.0)
-        for obj in objects:
-            if obj.class_name == "traffic light":
-                xmin, ymin, xmax, ymax = obj.bbox
-                crop = frame_bgr[max(0, ymin) : min(frame_bgr.shape[0], ymax), max(0, xmin) : min(frame_bgr.shape[1], xmax)]
-                traffic_light = self.traffic_light_classifier.classify_crop(crop, obj.bbox)
-                break
+        lights = [o for o in objects if o.class_name == "traffic light"]
+        if lights:
+            # Classify the largest (closest) traffic light
+            obj = max(lights, key=lambda o: (o.bbox[2] - o.bbox[0]) * (o.bbox[3] - o.bbox[1]))
+            xmin, ymin, xmax, ymax = obj.bbox
+            crop = frame_bgr[max(0, ymin) : min(frame_bgr.shape[0], ymax), max(0, xmin) : min(frame_bgr.shape[1], xmax)]
+            traffic_light = self.traffic_light_classifier.classify_crop(crop, obj.bbox)
 
         # 5. Evaluate ADAS Safety Alerts (LDW, FCW, Pedestrian, Red Light)
-        warnings = self.decision_engine.evaluate_safety_events(lanes, objects, traffic_light, signs)
+        warnings = self.decision_engine.evaluate_safety_events(
+            lanes, objects, traffic_light, signs, frame_width=frame_bgr.shape[1]
+        )
 
         # Calculate Latency & Performance FPS
         end_time = time.time()
         inference_latency_ms = (end_time - start_time) * 1000.0
-        total_pipeline_latency_ms = max(0.0, float(int(time.time() * 1000) - rx_timestamp_ms))
+        # Header timestamps are 32-bit wrapped ms from the Pi clock. Only meaningful if
+        # both machines are time-synced (NTP); clamp obviously-unsynced values to 0.
+        age = ms32_age(now_ms32(), rx_timestamp_ms)
+        total_pipeline_latency_ms = float(age) if age < 10_000 else 0.0
 
         self._frame_count += 1
         now = time.time()
@@ -183,5 +213,4 @@ class ADASPipelineOrchestrator:
         logger.info(f"Applying runtime config update: {settings}")
         if "confidence_threshold" in settings:
             self.object_detector.set_confidence_threshold(float(settings["confidence_threshold"]))
-        if "pi_ip" in settings:
-            self.video_broadcaster.set_target_ip(settings["pi_ip"])
+

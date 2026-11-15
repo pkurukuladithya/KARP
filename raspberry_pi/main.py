@@ -23,6 +23,7 @@ from raspberry_pi.camera.camera_capture import CameraCaptureWorker
 from raspberry_pi.video_streaming.rpi_stream_sender import RpiStreamSender
 from raspberry_pi.ai_receiver.stream_receiver import RpiStreamReceiver
 from raspberry_pi.ai_receiver.metadata_client import MetadataClientWorker
+from raspberry_pi.ai_receiver.brain_discovery import BrainDiscoveryWorker
 from raspberry_pi.esp32_communication.serial_client import Esp32SerialWorker
 from raspberry_pi.esp32_communication.esp32_simulator import Esp32SimulatorWorker
 from raspberry_pi.sensor_processing.accelerometer_filter import RoadConditionFilter
@@ -39,6 +40,7 @@ def parse_args():
     parser.add_argument("--laptop-ip", type=str, help="IP address of the laptop AI processing engine")
     parser.add_argument("--simulation", action="store_true", help="Force synthetic simulation mode")
     parser.add_argument("--fullscreen", action="store_true", help="Launch GUI in fullscreen kiosk mode")
+    parser.add_argument("--no-discovery", action="store_true", help="Disable automatic laptop discovery (use fixed --laptop-ip)")
     return parser.parse_args()
 
 
@@ -71,13 +73,19 @@ def main():
     cam_w = int(config.get("video", "width", 1280))
     cam_h = int(config.get("video", "height", 720))
     cam_fps = int(config.get("video", "fps", 30))
+    stream_w = int(config.get("video", "stream_width", 960))
+    stream_h = int(config.get("video", "stream_height", 540))
+    jpeg_q = int(config.get("video", "jpeg_quality", 75))
 
     esp_port = str(config.get("sensors", "esp32_port", "/dev/ttyUSB0"))
     baud_rate = int(config.get("sensors", "baud_rate", 115200))
     vibe_thresh = float(config.get("sensors", "vibration_threshold_g", 2.20))
     sim_mode = bool(config.get("sensors", "simulation_mode", False))
 
-    logger.info(f"Starting KARP Edge Host (Laptop: {laptop_ip}, SimMode: {sim_mode})")
+    logger.info(
+        f"Starting KARP Edge Host (Laptop: {laptop_ip}, camera {cam_w}x{cam_h}@{cam_fps}, "
+        f"stream {stream_w}x{stream_h} q{jpeg_q}, SimMode: {sim_mode})"
+    )
 
     # 3. Initialize Road Condition Digital Filter
     road_filter = RoadConditionFilter(initial_threshold_g=vibe_thresh)
@@ -89,14 +97,17 @@ def main():
         height=cam_h,
         fps=cam_fps,
         simulation_mode=sim_mode,
+        stream_width=stream_w,
+        stream_height=stream_h,
     )
     cam_worker.camera_status_changed.connect(window.on_camera_status_changed)
+    # Local raw preview (converted in the camera thread) shown only while AI video is absent
+    cam_worker.preview_ready.connect(window.on_local_preview)
 
-    # 5. Initialize Video Stream Sender (Pi -> Laptop)
-    stream_sender = RpiStreamSender(laptop_ip=laptop_ip, port=port_tx)
-    cam_worker.frame_captured.connect(stream_sender.push_frame)
-    # Enable local camera preview when Laptop AI is offline
-    cam_worker.frame_captured.connect(window.on_local_camera_frame)
+    # 5. Initialize Video Stream Sender (Pi -> Laptop). Frames are pushed directly from
+    #    the camera thread (thread-safe queue), never through the GUI event loop.
+    stream_sender = RpiStreamSender(laptop_ip=laptop_ip, port=port_tx, quality=jpeg_q)
+    cam_worker.add_frame_sink(stream_sender.push_frame)
 
     # 6. Initialize Return Video Stream Receiver (Laptop -> Pi)
     stream_receiver = RpiStreamReceiver(listen_port=port_rx)
@@ -120,6 +131,22 @@ def main():
     # Initialize true disconnected state on startup
     window.on_ai_connection_changed(False)
     window.on_esp32_connection_changed(False)
+
+    # 8b. Automatic laptop discovery (UDP beacon) - follows the laptop if its IP differs/changes
+    discovery = None
+    if not args.no_discovery:
+        discovery = BrainDiscoveryWorker(port=int(config.get("network", "discovery_port", 5005)))
+
+        def on_brain_found(ip: str):
+            stream_sender.set_laptop_ip(ip)
+            meta_client.set_laptop_ip(ip)
+
+        discovery.brain_found.connect(on_brain_found)
+
+    # Only send the local raw preview while the annotated AI stream is not arriving
+    preview_timer = QTimer()
+    preview_timer.timeout.connect(lambda: setattr(cam_worker, "preview_enabled", not window.ai_video_active()))
+    preview_timer.start(250)
 
     # 9. Connect GUI Interactive Controls
     def on_gui_threshold_change(new_thresh: float, persist: bool):
@@ -146,6 +173,8 @@ def main():
     stream_receiver.start()
     meta_client.start()
     esp_worker.start()
+    if discovery:
+        discovery.start()
 
     # 11. Clean Shutdown Handling
     def cleanup():
@@ -155,6 +184,8 @@ def main():
         stream_receiver.stop()
         meta_client.stop()
         esp_worker.stop()
+        if discovery:
+            discovery.stop()
 
     app.aboutToQuit.connect(cleanup)
 

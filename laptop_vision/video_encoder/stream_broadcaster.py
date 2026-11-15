@@ -28,6 +28,7 @@ class StreamBroadcaster:
         self._queue: queue.Queue = queue.Queue(maxsize=3)
         self._is_connected = False
         self._tx_fps = 0.0
+        self._retarget = False
 
     def start(self) -> None:
         self._running = True
@@ -41,7 +42,9 @@ class StreamBroadcaster:
 
     def set_target_ip(self, ip: str) -> None:
         if self.target_ip != ip:
+            logger.info(f"Return video target changed {self.target_ip} -> {ip}")
             self.target_ip = ip
+            self._retarget = True
 
     def broadcast_frame(self, frame_bgr: np.ndarray, frame_id: int, timestamp_ms: int) -> None:
         """Pushes an annotated frame to be sent to Raspberry Pi."""
@@ -68,7 +71,14 @@ class StreamBroadcaster:
         frame_count = 0
         last_stat_time = time.time()
 
+        last_fail_log = 0.0
         while self._running:
+            if self._retarget and sock is not None:
+                sock.close()
+                sock = None
+                self._is_connected = False
+            self._retarget = False
+
             # Connect to Raspberry Pi receiver
             if sock is None:
                 try:
@@ -78,8 +88,14 @@ class StreamBroadcaster:
                     sock.connect((self.target_ip, self.port))
                     self._is_connected = True
                     logger.info(f"Connected to Raspberry Pi Video Receiver at {self.target_ip}:{self.port}")
-                except Exception:
+                except Exception as e:
                     self._is_connected = False
+                    if time.time() - last_fail_log > 10.0:
+                        logger.warning(
+                            f"Cannot reach Pi HMI video receiver {self.target_ip}:{self.port} ({e}). "
+                            "Is raspberry_pi/main.py running? Retrying..."
+                        )
+                        last_fail_log = time.time()
                     if sock:
                         sock.close()
                         sock = None

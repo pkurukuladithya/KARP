@@ -6,6 +6,7 @@ Executes deep neural network perception, lane detection, object tracking, and re
 from __future__ import annotations
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -17,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from shared.config.system_config import get_config
+from shared.protocols.discovery import local_ipv4_addresses
 from laptop_vision.pipeline import ADASPipelineOrchestrator
 
 logging.basicConfig(
@@ -42,7 +44,8 @@ def main():
     config = get_config()
 
     target_ip = args.target_ip or config.get("network", "pi_ip", "127.0.0.1")
-    use_cuda = not args.force_cpu
+    force_cpu_env = str(os.getenv("KARP_FORCE_CPU", "false")).lower() in ("1", "true", "yes")
+    use_cuda = not (args.force_cpu or force_cpu_env)
 
     logger.info("==========================================================")
     logger.info("        KARP ADAS — Laptop AI Perception Engine           ")
@@ -50,7 +53,8 @@ def main():
     logger.info(f"Video Reception Port : {args.port}")
     logger.info(f"Return Video Target  : {target_ip}:{args.target_port}")
     logger.info(f"WebSocket Port       : {args.ws_port}")
-    logger.info(f"Acceleration Mode    : {'CUDA GPU (RTX 4050)' if use_cuda else 'CPU Only'}")
+    logger.info(f"Laptop LAN IPs       : {', '.join(local_ipv4_addresses()) or 'unknown'}")
+    logger.info("Loading YOLO model onto the GPU (first run downloads weights)...")
 
     orchestrator = ADASPipelineOrchestrator(
         rx_host=args.host,
@@ -69,14 +73,25 @@ def main():
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
+    logger.info(f"Inference Device     : {orchestrator.object_detector.device_name}")
     orchestrator.start()
-    logger.info("Perception pipeline running. Waiting for camera stream...")
+    logger.info("Perception pipeline running. Waiting for camera stream from the Pi...")
 
+    last_status = time.time()
     try:
         while orchestrator.running:
             orchestrator.step(timeout=0.05)
-            # Yield minimal CPU time when queue is idle
-            time.sleep(0.002)
+            now = time.time()
+            if now - last_status >= 5.0:
+                last_status = now
+                rx = orchestrator.camera_receiver
+                tx = orchestrator.video_broadcaster
+                logger.info(
+                    f"STATUS | Pi camera in: {'YES' if rx.is_connected else 'no '} {rx.reception_fps:5.1f} fps | "
+                    f"AI: {orchestrator._inference_fps:5.1f} fps on {orchestrator.object_detector.device_name} | "
+                    f"Return video -> {tx.target_ip}: {'YES' if tx.is_connected else 'no '} {tx.tx_fps:5.1f} fps | "
+                    f"WS clients: {len(orchestrator.ws_server._connected_clients)} | dropped: {rx.dropped_frames}"
+                )
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt. Cleaning up...")
     finally:
