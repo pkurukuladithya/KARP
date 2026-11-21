@@ -86,6 +86,38 @@ Every 5 s the terminal prints a line like this:
 STATUS | mode VISION | camera 30.0 fps | display 29.8 fps | AI 8.4 fps, 105 ms [ncnn] | lanes 6.1 ms | speed 48.2 km/h | CPU 62C
 ```
 
+## ESP32 sensor hub (USB serial)
+
+The ESP32-S3 firmware in `esp32_firmware/` adds GPS (NEO-6M), road vibration (MPU6050), status LEDs and a buzzer. It is optional: without it, pi_brain runs with simulated speed and map position.
+
+**Connect:** plug the ESP32-S3's USB port into the Pi. It appears as `/dev/ttyACM0` (native USB) or `/dev/ttyUSB0` (CP210x/CH340 boards). With `"esp32_port": "auto"` in `config.json`, pi_brain finds it by its USB ID. It reconnects by itself if the cable is unplugged or the ESP32 resets.
+
+**Check the link on its own** (no camera or AI needed):
+```bash
+python tools/esp32_monitor.py --list              # the ESP32 should be marked "<- Espressif ..."
+python tools/esp32_monitor.py                     # decoded GPS / MPU / road data every second
+python tools/esp32_monitor.py --test-actuators    # yellow LED + beep, then red blink + beeps
+```
+
+**Data flow:**
+
+| Direction | What |
+|---|---|
+| ESP32 → Pi, 5 Hz | `{"type":"sensor_telemetry", ...}`: GPS fix, speed, satellites, acceleration, vibration, road class, pothole event |
+| ESP32 → Pi, at boot | `boot`, `status` (MPU calibration) and `error` messages, logged in the terminal |
+| Pi → ESP32 | `{"cmd":"actuate","level":"CRITICAL"/"WARNING","buzzer_ms":N}`: red LED blinks + beeps for CRITICAL, steady yellow LED + one beep for a new WARNING. Sent at most every 0.4 s. |
+
+The ESP32 counts as online only while telemetry keeps arriving. After 1.5 s without data it is shown offline, and after 5 s the port is reopened. Every 5 s the terminal prints an `ESP32 |` status line.
+
+| Problem | Fix |
+|---|---|
+| `No permission for /dev/ttyACM0` | `sudo usermod -aG dialout $USER`, then reboot (`setup_pi.sh` does this) |
+| `... is in use by another program` | Close `pio device monitor`, Arduino serial monitor, or `raspberry_pi/main.py` |
+| `GPS module not sending` | Check GPS TX → GPIO18 and the GPS module's power |
+| `GPS searching` for a long time | Needs open sky; a cold start takes 1–5 minutes |
+| `MPU ERROR` | Check SDA → GPIO8, SCL → GPIO9 and 3.3 V; then press the ESP32 reset button |
+| No ESP32 hardware but want to test | `python tools/esp32_emulator.py`, then `bash run.sh --esp-port socket://127.0.0.1:7000` |
+
 ## Calibrate for your car (`config.json`)
 
 | Setting | What to set |

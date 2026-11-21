@@ -41,7 +41,7 @@ from brain.camera import Camera  # noqa: E402
 from brain.config import load_config  # noqa: E402
 from brain.detector import YoloDetector, model_files_present  # noqa: E402
 from brain.engine import DetectorWorker, read_cpu_temp  # noqa: E402
-from brain.esp32 import Esp32Client  # noqa: E402
+from brain.esp32 import AlertSignaler, Esp32Client  # noqa: E402
 from brain import hud  # noqa: E402
 from brain.lanes import LaneDetector  # noqa: E402
 from brain.map_view import MapView  # noqa: E402
@@ -75,6 +75,18 @@ def parse_args():
     ap.add_argument("--esp-port", help="ESP32 serial port (auto | /dev/ttyACM0 | /dev/ttyUSB0 | COM*)")
     ap.add_argument("--duration", type=float, default=0, help="Exit after N seconds (testing)")
     return ap.parse_args()
+
+
+def esp32_status_line(t: dict) -> str:
+    if not t["connected"]:
+        return f"{t['link']}" + (f" ({t['port']})" if t["port"] else "") + " - sensors offline, using simulation"
+    gps = (f"GPS FIX {t['satellites']} sats {t['lat']:.5f},{t['lon']:.5f} {t['speed_kmh']:.1f} km/h"
+           if t["gps_valid"] else
+           (f"GPS searching ({t['satellites']} sats)" if t["gps_connected"] else "GPS module not sending"))
+    mpu = (f"MPU OK vib {t['vibration']:.3f} g peak {t['vibration_peak']:.3f} g" if t["mpu_connected"]
+           else f"MPU ERROR ({t['last_error'] or 'not found'})")
+    return (f"ONLINE {t['port']} {t['rx_hz']:.1f} Hz | {gps} | {mpu} | road {t['road']} "
+            f"({t['vehicle_state']}) | potholes {t['pothole_count']}")
 
 
 def apply_args(cfg: dict, a) -> None:
@@ -163,6 +175,7 @@ def main() -> int:
         port=sensors_cfg.get("esp32_port", "auto"),
         baud_rate=int(sensors_cfg.get("baud_rate", 115200)),
     )
+    esp_signal = AlertSignaler(esp32)  # ADAS alerts -> ESP32 LEDs + buzzer (rate-limited)
 
     # Active view mode state
     view_state = {"mode": disp_cfg.get("mode", "vision")}
@@ -256,17 +269,13 @@ def main() -> int:
             else:
                 lanes = None
             tracks = worker.snapshot() if worker else []
-            alerts = alert_mgr.update(evaluate(tracks, lanes, frame.shape[1], cfg["alerts"]), now)
+            raw_alerts = evaluate(tracks, lanes, frame.shape[1], cfg["alerts"])
+            if pothole_val:  # latched for 3 s by the ESP32 client (the ESP32 beeps by itself)
+                raw_alerts.append(Alert("pothole", "WARNING", "! POTHOLE DETECTED !"))
+            alerts = alert_mgr.update(raw_alerts, now)
 
-            if pothole_val:
-                alerts.append(Alert("pothole", "WARNING", "! POTHOLE DETECTED !"))
-
-            # Actuator output: send alert to ESP32 (buzzer & LED trigger)
-            has_crit = any(a.level == "CRITICAL" for a in alerts)
-            if has_crit:
-                esp32.send_alert("CRITICAL", buzzer_ms=400)
-            elif pothole_val:
-                esp32.send_alert("WARNING", buzzer_ms=120)
+            # Actuator output: ADAS alerts -> ESP32 red/yellow LED + buzzer
+            esp_signal.update(alerts, now)
 
             # Draw vision HUD (preserves full ADAS capabilities)
             vision_frame = frame.copy()
@@ -330,8 +339,9 @@ def main() -> int:
                 f"STATUS | mode {view_state['mode'].upper()} | camera {camera.capture_fps:4.1f} fps ({camera.description}) | display {disp_fps:4.1f} fps"
                 + (f" | AI {worker.fps:4.1f} fps, {worker.infer_ms:.0f} ms/inference, result age {worker.age_ms:.0f} ms"
                    f" [{worker.detector.backend}]" if worker else "")
-                + f" | lanes {lane_ms:.1f} ms | speed {speed_kmh:.1f} km/h | ESP32: {'OK' if has_esp else 'OFF'} ({road_val})" + (f" | CPU {temp:.0f}C" if temp else "")
+                + f" | lanes {lane_ms:.1f} ms | speed {speed_kmh:.1f} km/h" + (f" | CPU {temp:.0f}C" if temp else "")
             )
+            log.info("ESP32  | " + esp32_status_line(telem))
             if temp and temp > 80:
                 log.warning("CPU above 80C - the Pi is throttling. Fit a heatsink + fan.")
             t_stat = now

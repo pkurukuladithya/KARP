@@ -26,6 +26,13 @@ pip install --upgrade pip wheel
 pip install -r requirements.txt
 pip install ncnn || echo "(ncnn wheel not available - ONNX Runtime will be used)"
 
+echo "-- ESP32 serial access (USB)"
+if ! id -nG "$USER" | grep -qw dialout; then
+  sudo usermod -aG dialout "$USER"
+  echo "Added $USER to the 'dialout' group for /dev/ttyACM*/ttyUSB*. REBOOT once before running."
+fi
+python tools/esp32_monitor.py --list || true
+
 echo "-- Model files"
 if [ ! -f models/yolo11n_320.onnx ] && [ ! -f models/yolo11n_320_ncnn/model.ncnn.param ]; then
   echo "ERROR: no model in pi_brain/models. Run on the laptop: python pi_brain/tools/export_model.py, then git pull."

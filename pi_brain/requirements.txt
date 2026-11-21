@@ -3,5 +3,6 @@
 numpy>=1.24,<2            # <2 keeps the system picamera2 (CSI camera) working
 opencv-python>=4.8,<4.12  # full build (with window support); NOT opencv-python-headless
 onnxruntime>=1.17         # aarch64 wheels: needs 64-bit OS
+pyserial>=3.5             # USB serial link to the ESP32 sensor hub
 # Optional, usually fastest on ARM (setup_pi.sh installs it if a wheel exists):
 # ncnn
