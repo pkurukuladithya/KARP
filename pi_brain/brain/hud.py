@@ -100,6 +100,29 @@ def draw_speed_badge(img: np.ndarray, speed_kmh: float) -> None:
     cv2.putText(img, "KM/H", (bx + int(50 * s), by + int(26 * s)), FONT, 0.38 * s, (0, 200, 230), 1, cv2.LINE_AA)
 
 
+def draw_road_badge(img: np.ndarray, road: str, pothole: bool = False) -> None:
+    """Draws road condition and pothole indicator from ESP32 MPU6050."""
+    w = img.shape[1]
+    s = w / 640.0
+    bx, by = int(112 * s), int(30 * s)
+    bw, bh = int(125 * s), int(42 * s)
+
+    roi = img[by : by + bh, bx : bx + bw]
+    over = np.full_like(roi, (24, 20, 16))
+    cv2.addWeighted(over, 0.75, roi, 0.25, 0, dst=roi)
+    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (60, 80, 100), 1)
+
+    cv2.putText(img, "ROAD HEALTH", (bx + int(8 * s), by + int(14 * s)), FONT, 0.32 * s, (150, 170, 190), 1, cv2.LINE_AA)
+
+    if pothole:
+        cv2.putText(img, "! POTHOLE !", (bx + int(8 * s), by + int(32 * s)), FONT, 0.45 * s, (0, 0, 255), 2, cv2.LINE_AA)
+    else:
+        road_upper = road.upper() if road else "UNKNOWN"
+        color = (0, 230, 80) if road_upper == "SMOOTH" else ((0, 215, 255) if road_upper == "MODERATE" else (0, 80, 255))
+        cv2.circle(img, (bx + int(14 * s), by + int(28 * s)), int(4 * s), color, -1)
+        cv2.putText(img, road_upper, (bx + int(24 * s), by + int(32 * s)), FONT, 0.42 * s, color, 1, cv2.LINE_AA)
+
+
 def draw_view_mode_pill(img: np.ndarray, mode_name: str) -> None:
     """Draws a clickable hint pill in the top-right corner."""
     w = img.shape[1]

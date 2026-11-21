@@ -36,11 +36,12 @@ if str(BASE_DIR) not in sys.path:
 
 import cv2  # noqa: E402
 
-from brain.alerts import AlertManager, evaluate  # noqa: E402
+from brain.alerts import AlertManager, Alert, evaluate  # noqa: E402
 from brain.camera import Camera  # noqa: E402
 from brain.config import load_config  # noqa: E402
 from brain.detector import YoloDetector, model_files_present  # noqa: E402
 from brain.engine import DetectorWorker, read_cpu_temp  # noqa: E402
+from brain.esp32 import Esp32Client  # noqa: E402
 from brain import hud  # noqa: E402
 from brain.lanes import LaneDetector  # noqa: E402
 from brain.map_view import MapView  # noqa: E402
@@ -71,6 +72,7 @@ def parse_args():
     ap.add_argument("--fullscreen", action="store_true")
     ap.add_argument("--headless", action="store_true", help="No window (use with --web)")
     ap.add_argument("--web", type=int, metavar="PORT", help="Serve the HUD as MJPEG on this port")
+    ap.add_argument("--esp-port", help="ESP32 serial port (auto | /dev/ttyACM0 | /dev/ttyUSB0 | COM*)")
     ap.add_argument("--duration", type=float, default=0, help="Exit after N seconds (testing)")
     return ap.parse_args()
 
@@ -94,6 +96,8 @@ def apply_args(cfg: dict, a) -> None:
         cfg.setdefault("telemetry", {})["zoom"] = a.zoom
     if a.daylight:
         cfg["display"]["dark_mode"] = False
+    if a.esp_port:
+        cfg.setdefault("sensors", {})["esp32_port"] = a.esp_port
     if a.backend:
         cfg["detector"]["backend"] = a.backend
     if a.threads:
@@ -153,6 +157,13 @@ def main() -> int:
         dark_mode=disp_cfg.get("dark_mode", True),
     )
 
+    # ESP32 Sensor & Actuator client (MPU6050 + NEO-6M GPS + Buzzer + LEDs)
+    sensors_cfg = cfg.get("sensors", {})
+    esp32 = Esp32Client(
+        port=sensors_cfg.get("esp32_port", "auto"),
+        baud_rate=int(sensors_cfg.get("baud_rate", 115200)),
+    )
+
     # Active view mode state
     view_state = {"mode": disp_cfg.get("mode", "vision")}
 
@@ -201,9 +212,37 @@ def main() -> int:
         item = camera.wait_new(last_id, timeout=1.0)
         now = time.perf_counter()
 
-        # Update telemetry & speed calculation
-        sim_mv = telem_cfg.get("sim_movement", True)
-        speed_kmh = map_view.update_telemetry(sim_movement=sim_mv)
+        # Read ESP32 telemetry (GPS + MPU6050 Accelerometer)
+        telem = esp32.get_telemetry()
+        has_esp = telem["connected"]
+        gps_fixed = telem["gps_valid"]
+
+        if has_esp:
+            spd_val = telem["speed_kmh"] if gps_fixed else None
+            lat_val = telem["lat"] if gps_fixed else None
+            lon_val = telem["lon"] if gps_fixed else None
+            hdg_val = telem["heading_deg"] if gps_fixed else None
+            sats_val = telem["satellites"]
+            alt_val = telem["altitude_m"]
+            road_val = telem["road"]
+            pothole_val = telem["pothole"]
+            speed_kmh = map_view.update_telemetry(
+                speed_kmh=spd_val,
+                lat=lat_val,
+                lon=lon_val,
+                heading=hdg_val,
+                satellites=sats_val,
+                has_fix=gps_fixed,
+                altitude=alt_val,
+                road=road_val,
+                pothole=pothole_val,
+                sim_movement=not gps_fixed and telem_cfg.get("sim_movement", True),
+            )
+        else:
+            road_val = "SIMULATED"
+            pothole_val = False
+            sim_mv = telem_cfg.get("sim_movement", True)
+            speed_kmh = map_view.update_telemetry(sim_movement=sim_mv)
 
         if item is None:
             vision_disp = hud.no_signal_frame(target_disp_w, target_disp_h, f"NO CAMERA SIGNAL ({camera.source})")
@@ -219,11 +258,22 @@ def main() -> int:
             tracks = worker.snapshot() if worker else []
             alerts = alert_mgr.update(evaluate(tracks, lanes, frame.shape[1], cfg["alerts"]), now)
 
+            if pothole_val:
+                alerts.append(Alert("pothole", "WARNING", "! POTHOLE DETECTED !"))
+
+            # Actuator output: send alert to ESP32 (buzzer & LED trigger)
+            has_crit = any(a.level == "CRITICAL" for a in alerts)
+            if has_crit:
+                esp32.send_alert("CRITICAL", buzzer_ms=400)
+            elif pothole_val:
+                esp32.send_alert("WARNING", buzzer_ms=120)
+
             # Draw vision HUD (preserves full ADAS capabilities)
             vision_frame = frame.copy()
             hud.draw_lanes(vision_frame, lanes)
             hud.draw_tracks(vision_frame, tracks, now)
             hud.draw_speed_badge(vision_frame, speed_kmh)
+            hud.draw_road_badge(vision_frame, road_val, pothole=pothole_val)
 
             ai = f"AI {worker.fps:4.1f}fps {worker.infer_ms:3.0f}ms {worker.detector.backend}" if worker and worker.enabled else "AI off"
             ln = ("LANE " + ("OK" if lanes.stable else ("L" if lanes.left is not None else "-") +
@@ -280,7 +330,7 @@ def main() -> int:
                 f"STATUS | mode {view_state['mode'].upper()} | camera {camera.capture_fps:4.1f} fps ({camera.description}) | display {disp_fps:4.1f} fps"
                 + (f" | AI {worker.fps:4.1f} fps, {worker.infer_ms:.0f} ms/inference, result age {worker.age_ms:.0f} ms"
                    f" [{worker.detector.backend}]" if worker else "")
-                + f" | lanes {lane_ms:.1f} ms | speed {speed_kmh:.1f} km/h" + (f" | CPU {temp:.0f}C" if temp else "")
+                + f" | lanes {lane_ms:.1f} ms | speed {speed_kmh:.1f} km/h | ESP32: {'OK' if has_esp else 'OFF'} ({road_val})" + (f" | CPU {temp:.0f}C" if temp else "")
             )
             if temp and temp > 80:
                 log.warning("CPU above 80C - the Pi is throttling. Fit a heatsink + fan.")
@@ -290,6 +340,7 @@ def main() -> int:
 
     log.info("Shutting down...")
     camera.stop()
+    esp32.stop()
     map_view._tile_mgr.stop()
     if worker:
         worker.stop()

@@ -172,6 +172,8 @@ class MapView:
         self.altitude_m = 18.5
         self.satellites = 9
         self.has_fix = True
+        self.road_condition = "SMOOTH"
+        self.pothole_detected = False
 
         self._t_last = time.perf_counter()
         self._trail_gps: Deque[Tuple[float, float]] = deque(maxlen=40)
@@ -183,12 +185,27 @@ class MapView:
         lat: Optional[float] = None,
         lon: Optional[float] = None,
         heading: Optional[float] = None,
+        satellites: Optional[int] = None,
+        has_fix: Optional[bool] = None,
+        altitude: Optional[float] = None,
+        road: Optional[str] = None,
+        pothole: bool = False,
         sim_movement: bool = True,
     ) -> float:
-        """Updates vehicle state; simulates realistic road driving motion if GPS is not connected."""
+        """Updates vehicle state from real GPS/ESP32; simulates realistic motion if disconnected."""
         now = time.perf_counter()
         dt = max(0.001, min(0.2, now - self._t_last))
         self._t_last = now
+
+        if satellites is not None:
+            self.satellites = int(satellites)
+        if has_fix is not None:
+            self.has_fix = bool(has_fix)
+        if altitude is not None:
+            self.altitude_m = float(altitude)
+        if road is not None:
+            self.road_condition = str(road)
+        self.pothole_detected = bool(pothole)
 
         if speed_kmh is not None:
             self.current_speed = float(speed_kmh)
@@ -389,16 +406,19 @@ class MapView:
         cv2.addWeighted(over, 0.82, roi, 0.18, 0, dst=roi)
         cv2.rectangle(img, (x, y), (x + bw, y + bh), (60, 75, 90), 1)
 
-        cv2.putText(img, "GPS TELEMETRY", (x + 8, y + 16), FONT, 0.35, (150, 170, 190), 1, cv2.LINE_AA)
+        cv2.putText(img, "TELEMETRY & ROAD", (x + 8, y + 16), FONT, 0.35, (150, 170, 190), 1, cv2.LINE_AA)
 
-        lines = [
-            f"LAT:  {self.lat:.4f} N",
-            f"LON:  {self.lon:.4f} E",
-            f"HDG:  {self.heading_deg:03.0f} deg ({self._compass_heading()})",
-            f"ALT:  {self.altitude_m:.1f} m",
+        road_txt = f"ROAD: {self.road_condition}" if not self.pothole_detected else "! POTHOLE ALERT !"
+        road_col = (0, 0, 255) if self.pothole_detected else ((0, 230, 80) if self.road_condition == "SMOOTH" else ((0, 210, 255) if self.road_condition == "MODERATE" else (0, 80, 255)))
+
+        items = [
+            (f"LAT:  {self.lat:.4f} N", (200, 220, 235)),
+            (f"LON:  {self.lon:.4f} E", (200, 220, 235)),
+            (f"HDG:  {self.heading_deg:03.0f} deg ({self._compass_heading()})", (200, 220, 235)),
+            (road_txt, road_col),
         ]
-        for idx, text in enumerate(lines):
-            cv2.putText(img, text, (x + 10, y + 36 + idx * 18), FONT, 0.36, (200, 220, 235), 1, cv2.LINE_AA)
+        for idx, (text, col) in enumerate(items):
+            cv2.putText(img, text, (x + 10, y + 36 + idx * 18), FONT, 0.36, col, 1, cv2.LINE_AA)
 
     def _draw_top_bar(self, img: np.ndarray, mode_name: str) -> None:
         bar_h = 24

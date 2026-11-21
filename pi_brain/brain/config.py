@@ -68,6 +68,10 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "longitude": 79.8612,
         "zoom": 16,
     },
+    "sensors": {
+        "esp32_port": "auto",  # auto | /dev/ttyACM0 | /dev/ttyUSB0
+        "baud_rate": 115200,
+    },
 }
 
 

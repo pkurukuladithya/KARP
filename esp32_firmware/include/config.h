@@ -1,55 +1,53 @@
 #pragma once
 /**
  * @file config.h
- * @brief Centralized Hardware Configuration for KARP ESP32 Firmware.
+ * @brief Centralized Hardware Configuration for KARP ESP32-S3 Firmware.
  * 
- * IMPORTANT HARDWARE INTEGRATION NOTES:
- * - Accelerometer Model: Configurable below (Default: MPU-6050 at 0x68). 
- *   If using ADXL345, set ACCEL_TYPE_ADXL345 and adjust I2C address to 0x53.
- * - GPS Module: Standard NMEA UART GPS (NEO-6M / NEO-8M) on UART2 (GPIO 16/17).
- * - All pin definitions and communication rates can be modified in this file.
+ * Hardware Pinout (ESP32-S3 DevKit):
+ *   - MPU6050 Accelerometer: SDA -> GPIO 8, SCL -> GPIO 9, INT -> GPIO 12 (0x68)
+ *   - NEO-6M GPS: RX -> GPIO 18 (from GPS TXD), TX -> GPIO 17 (to GPS RXD), PPS -> GPIO 4
+ *   - Status LEDs:
+ *       RED LED    -> GPIO 5 (ROUGH / Critical ADAS Hazard)
+ *       YELLOW LED -> GPIO 6 (MODERATE / GPS Searching Blink)
+ *       GREEN LED  -> GPIO 7 (SMOOTH / Normal Operation)
+ *   - Piezo Buzzer -> GPIO 14 (Audible Warning Buzzer)
  */
 
 #include <Arduino.h>
 
 // ============================================================================
-// 1. SERIAL COMMUNICATION (USB-CDC TO RASPBERRY PI)
+// 1. SERIAL COMMUNICATION (USB CDC TO RASPBERRY PI)
 // ============================================================================
 #define HOST_SERIAL_BAUD        115200
-#define TELEMETRY_RATE_HZ       20          // Telemetry broadcast frequency (20 Hz)
+#define TELEMETRY_RATE_HZ       5           // Telemetry broadcast frequency (5 Hz / 200 ms)
 #define TELEMETRY_INTERVAL_MS   (1000 / TELEMETRY_RATE_HZ)
 
 // ============================================================================
-// 2. I2C ACCELEROMETER CONFIGURATION
+// 2. I2C MPU6050 ACCELEROMETER CONFIGURATION
 // ============================================================================
-#define I2C_SDA_PIN             21          // ESP32 Hardware I2C SDA
-#define I2C_SCL_PIN             22          // ESP32 Hardware I2C SCL
-#define I2C_CLOCK_SPEED         400000      // 400 kHz Fast-Mode I2C
+constexpr uint8_t MPU_SDA_PIN   = 8;
+constexpr uint8_t MPU_SCL_PIN   = 9;
+constexpr uint8_t MPU_INT_PIN   = 12;
+constexpr uint8_t MPU_ADDRESS   = 0x68;
 
-// Select Sensor Driver (Uncomment desired driver):
-#define ACCEL_DRIVER_MPU6050    1
-// #define ACCEL_DRIVER_ADXL345 1
-
-#define MPU6050_I2C_ADDR_PRIMARY   0x68     // AD0 pulled to GND
-#define MPU6050_I2C_ADDR_SECONDARY 0x69     // AD0 pulled to VCC
-#define ADXL345_I2C_ADDR           0x53     // SDO pulled to GND
-
-#define DEFAULT_VIBRATION_THRESHOLD_G  2.20f // Initial vibration trigger threshold in g
+#define I2C_CLOCK_SPEED         100000      // 100 kHz Standard I2C
 
 // ============================================================================
-// 3. UART GPS CONFIGURATION
+// 3. UART GPS CONFIGURATION (NEO-6M)
 // ============================================================================
-#define GPS_UART_NUM            2           // Hardware Serial 2
-#define GPS_RX_PIN              16          // Connected to GPS TX pin
-#define GPS_TX_PIN              17          // Connected to GPS RX pin
-#define GPS_BAUD_RATE           9600        // Standard NMEA baud rate
+constexpr uint8_t GPS_RX_PIN    = 18;       // ESP32 RX receives from GPS TXD
+constexpr uint8_t GPS_TX_PIN    = 17;       // ESP32 TX sends to GPS RXD
+constexpr uint8_t GPS_PPS_PIN   = 4;        // Optional PPS pin
+#define GPS_BAUD_RATE           9600        // Standard NEO-6M baud rate
 
 // ============================================================================
-// 4. ACTUATOR & SAFETY SAFEGUARDS
+// 4. LED & BUZZER ACTUATOR CONFIGURATION
 // ============================================================================
-#define PIN_WARNING_LED         2           // Status / Hazard Warning LED (Onboard or external)
-#define PIN_PIEZO_BUZZER        4           // Audible Warning Piezo Buzzer
+constexpr uint8_t RED_LED_PIN    = 5;       // GPIO 5 -> 330 ohm -> Red Anode
+constexpr uint8_t YELLOW_LED_PIN = 6;       // GPIO 6 -> 330 ohm -> Yellow Anode
+constexpr uint8_t GREEN_LED_PIN  = 7;       // GPIO 7 -> 330 ohm -> Green Anode
+constexpr uint8_t BUZZER_PIN     = 14;      // GPIO 14 -> Buzzer
 
-// Safety Watchdog: Prevents buzzer from staying ON continuously in case of crash or command lock
-#define BUZZER_MAX_DURATION_MS  1500        // Absolute maximum continuous buzzer time (1.5 seconds)
-#define BUZZER_DEFAULT_PULSE_MS 250         // Standard warning pulse duration
+// Safety Watchdog
+#define BUZZER_MAX_DURATION_MS  2000        // Safety maximum continuous buzz (2 sec)
+#define BUZZER_DEFAULT_PULSE_MS 250         // Standard ADAS pulse duration
