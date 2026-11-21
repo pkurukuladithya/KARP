@@ -41,8 +41,17 @@
   "display": {
     "window": true,
     "fullscreen": false,
+    "mode": "vision",
+    "width": 480,
+    "height": 320,
     "web_port": 0,
     "web_fps": 12,
     "web_quality": 70
+  },
+  "telemetry": {
+    "speed_kmh": 48.0,
+    "sim_movement": true,
+    "latitude": 6.9271,
+    "longitude": 79.8612
   }
 }

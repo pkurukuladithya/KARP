@@ -53,9 +53,18 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
     "display": {
         "window": True,
         "fullscreen": False,
+        "mode": "vision",  # vision | map | split
+        "width": 480,  # target LCD width
+        "height": 320,  # target LCD height
         "web_port": 0,  # e.g. 8080 = view the HUD at http://<pi-ip>:8080 (0 = off)
         "web_fps": 12,
         "web_quality": 70,
+    },
+    "telemetry": {
+        "speed_kmh": 48.0,
+        "sim_movement": True,
+        "latitude": 6.9271,
+        "longitude": 79.8612,
     },
 }
 

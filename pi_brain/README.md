@@ -37,6 +37,7 @@ No queues anywhere: a slow consumer skips frames instead of building up lag.
 ## Hardware notes
 
 - **64-bit Raspberry Pi OS (Bookworm)**. Check with `uname -m`, which must say `aarch64`. The fast backends (NCNN, ONNX Runtime) need a 64-bit OS.
+- **3.5" RPi LCD (480x320) or HDMI Display**: Native output is tailored to 480x320 resolution with single-tap view switching.
 - **Heatsink + fan**. The detector keeps 3 cores busy, and without cooling the Pi throttles at 80 °C and slows down. The HUD shows the CPU temperature.
 - **Camera:** a USB webcam (MJPG capable) or the Pi Camera Module (`--source picam`).
 - **Power:** an official 5 V 3 A supply.
@@ -53,11 +54,14 @@ This creates `.venv`, installs numpy, OpenCV, ONNX Runtime and NCNN, and finishe
 
 ## Run
 
-On the Pi's desktop (monitor or car display):
+On the Pi's desktop (3.5" LCD or car display):
 ```bash
 cd ~/KARP/pi_brain
-bash run.sh                      # window
-bash run.sh --fullscreen         # kiosk
+bash run.sh                      # window (fitted to 480x320 display)
+bash run.sh --fullscreen         # kiosk mode (fills 3.5" LCD completely)
+bash run.sh --view map           # start directly in Navigation Map mode
+bash run.sh --view split         # start in Split mode (Vision + Map)
+bash run.sh --speed 50           # set base vehicle speed in km/h
 bash run.sh --web 8080           # plus a live view at http://<pi-ip>:8080 on a phone
 bash run.sh --headless --web 8080   # no monitor attached
 bash run.sh --source picam       # Pi Camera Module instead of USB
@@ -65,27 +69,30 @@ bash run.sh --source drive.mp4   # test with a dash-cam video
 bash run.sh --source synthetic   # no camera at all
 ```
 
-Window keys:
+Window keys & Controls:
 
-| Key | Action |
+| Control | Action |
 |---|---|
+| **Mouse Click / Tap** | **Cycle views: VISION -> MAP -> SPLIT** |
+| `m` | **Cycle views: VISION -> MAP -> SPLIT** |
 | `q` / `Esc` | Quit |
-| `f` | Fullscreen |
+| `f` | Fullscreen toggle |
 | `d` | Detection on/off |
 | `l` | Lanes on/off |
 | `s` | Snapshot |
 
 Every 5 s the terminal prints a line like this:
 ```
-STATUS | camera 30.0 fps | display 29.8 fps | AI 8.4 fps, 105 ms/inference, result age 140 ms [ncnn] | lanes 6.1 ms | CPU 62C
+STATUS | mode VISION | camera 30.0 fps | display 29.8 fps | AI 8.4 fps, 105 ms [ncnn] | lanes 6.1 ms | speed 48.2 km/h | CPU 62C
 ```
-
-Judge smoothness on the Pi's own screen or in the `--web` view, **not over VNC**. VNC competes with the ADAS for CPU.
 
 ## Calibrate for your car (`config.json`)
 
 | Setting | What to set |
 |---|---|
+| `display.mode` | Initial view: `vision`, `map`, or `split`. |
+| `display.width` / `height` | Target display output (default: 480x320 for 3.5" LCD). |
+| `telemetry.speed_kmh` | Base vehicle speed for the speedometer display. |
 | `geometry.camera_height_m` | Lens height above the road. Distance accuracy depends on it. |
 | `geometry.pitch_deg` | Downward tilt of the camera (0 = level). |
 | `geometry.hfov_deg` | Your camera's horizontal field of view (most webcams are 60–78°). |
@@ -103,27 +110,8 @@ Judge smoothness on the Pi's own screen or in the `--web` view, **not over VNC**
 - **LANE DEPARTURE LEFT/RIGHT**: both lane lines must have been tracked stably first.
 - **RED LIGHT AHEAD**, **STOP SIGN**.
 
-## Other model sizes (optional, on the laptop)
-
-```bash
-python pi_brain/tools/export_model.py --imgsz 256              # faster, shorter range
-python pi_brain/tools/export_model.py --imgsz 416              # slower, longer range
-```
-
-Then update `input_size` and the model paths in `config.json`, and `git pull` on the Pi.
-
 ## Tests
 
 ```bash
 python -m pytest pi_brain/tests -q
 ```
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| `Cannot open a window` | Run from the Pi desktop, or `bash run.sh --headless --web 8080`. Check that `opencv-python-headless` is not installed. |
-| `camera '0' not available` | Run `v4l2-ctl --list-devices` and use `--source /dev/videoN`. |
-| AI below 5 fps | Run `tools/benchmark.py`, check the CPU temperature (cooling), close VNC and the browser. |
-| Lanes never "OK" | Lower `lanes.roi_top`, and check that the camera sees the road (not the bonnet). |
-| Distances wrong | Set `camera_height_m`, `pitch_deg` and `hfov_deg`. |

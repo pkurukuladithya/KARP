@@ -82,6 +82,35 @@ def draw_status(img: np.ndarray, line: str) -> None:
     cv2.putText(img, line, (6, int(16 * s)), FONT, 0.45 * s, (230, 230, 230), 1, cv2.LINE_AA)
 
 
+def draw_speed_badge(img: np.ndarray, speed_kmh: float) -> None:
+    """Draws a compact, high-contrast automotive speed badge on the vision HUD."""
+    w, h = img.shape[:2][1], img.shape[:2][0]
+    s = w / 640.0
+    bx, by = int(10 * s), int(30 * s)
+    bw, bh = int(95 * s), int(42 * s)
+
+    # Translucent card background
+    roi = img[by : by + bh, bx : bx + bw]
+    over = np.full_like(roi, (24, 20, 16))
+    cv2.addWeighted(over, 0.75, roi, 0.25, 0, dst=roi)
+    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (60, 80, 100), 1)
+
+    spd_text = f"{max(0.0, speed_kmh):.0f}"
+    cv2.putText(img, spd_text, (bx + int(8 * s), by + int(28 * s)), FONT, 0.85 * s, (0, 230, 255), 2, cv2.LINE_AA)
+    cv2.putText(img, "KM/H", (bx + int(50 * s), by + int(26 * s)), FONT, 0.38 * s, (0, 200, 230), 1, cv2.LINE_AA)
+
+
+def draw_view_mode_pill(img: np.ndarray, mode_name: str) -> None:
+    """Draws a clickable hint pill in the top-right corner."""
+    w = img.shape[1]
+    s = w / 640.0
+    pill = f"[{mode_name.upper()} | CLICK TO SWITCH]"
+    (tw, _), _ = cv2.getTextSize(pill, FONT, 0.38 * s, 1)
+    rx = w - tw - int(10 * s)
+    ry = int(16 * s)
+    cv2.putText(img, pill, (rx, ry), FONT, 0.38 * s, (0, 220, 255), 1, cv2.LINE_AA)
+
+
 def draw_alerts(img: np.ndarray, alerts: List[Alert]) -> None:
     if not alerts:
         return

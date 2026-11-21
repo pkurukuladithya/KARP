@@ -1,7 +1,10 @@
 """Unit tests for the standalone Pi brain (run: python -m pytest pi_brain/tests -q)."""
 
 import numpy as np
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None
 
 from brain.alerts import AlertManager, Alert, evaluate
 from brain.camera import synthetic_road
@@ -111,6 +114,36 @@ def test_alert_manager_holds_then_clears():
 def test_config_file_loads():
     cfg = load_config()
     assert cfg["detector"]["input_size"] == 320 and cfg["camera"]["width"] == 640
+    assert cfg["display"]["width"] == 480 and cfg["display"]["height"] == 320
+    assert "telemetry" in cfg and cfg["telemetry"]["speed_kmh"] == 48.0
+
+
+def test_map_view_rendering_and_split():
+    from brain.map_view import MapView
+    from brain.alerts import Alert
+    import numpy as np
+
+    mv = MapView(width=480, height=320, lat=6.9271, lon=79.8612, base_speed=48.0)
+    spd = mv.update_telemetry(sim_movement=True)
+    assert 40.0 < spd < 60.0
+
+    alerts = [Alert("fcw", "CRITICAL", "BRAKE! CAR 4.2m")]
+    map_img = mv.render(spd, alerts, "MAP")
+    assert map_img.shape == (320, 480, 3)
+
+    dummy_vision = np.zeros((320, 480, 3), dtype=np.uint8)
+    split_img = mv.render_split(dummy_vision, spd, alerts)
+    assert split_img.shape == (320, 480, 3)
+
+
+def test_hud_speed_badge():
+    import numpy as np
+    from brain.hud import draw_speed_badge, draw_view_mode_pill
+
+    img = np.zeros((320, 480, 3), dtype=np.uint8)
+    draw_speed_badge(img, 52.0)
+    draw_view_mode_pill(img, "VISION")
+    assert np.any(img > 0)
 
 
 def test_real_model_detects_bus_if_available():
