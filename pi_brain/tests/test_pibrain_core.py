@@ -134,6 +134,7 @@ def test_map_view_rendering_and_split():
     dummy_vision = np.zeros((320, 480, 3), dtype=np.uint8)
     split_img = mv.render_split(dummy_vision, spd, alerts)
     assert split_img.shape == (320, 480, 3)
+    mv._tile_mgr.stop()
 
 
 def test_hud_speed_badge():

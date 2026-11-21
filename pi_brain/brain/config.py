@@ -56,6 +56,7 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "mode": "vision",  # vision | map | split
         "width": 480,  # target LCD width
         "height": 320,  # target LCD height
+        "dark_mode": True,  # automotive dark-theme tiles
         "web_port": 0,  # e.g. 8080 = view the HUD at http://<pi-ip>:8080 (0 = off)
         "web_fps": 12,
         "web_quality": 70,
@@ -65,6 +66,7 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "sim_movement": True,
         "latitude": 6.9271,
         "longitude": 79.8612,
+        "zoom": 16,
     },
 }
 

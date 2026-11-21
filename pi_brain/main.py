@@ -62,6 +62,8 @@ def parse_args():
     ap.add_argument("--disp-height", type=int, help="Display output height (default: 320 for 3.5\" LCD)")
     ap.add_argument("--view", choices=VIEW_MODES, help="Initial view mode: vision | map | split")
     ap.add_argument("--speed", type=float, help="Base vehicle speed in km/h (hardcoded/simulated)")
+    ap.add_argument("--zoom", type=int, default=16, help="OpenStreetMap zoom level (default: 16)")
+    ap.add_argument("--daylight", action="store_true", help="Use standard daylight OSM tiles instead of dark theme")
     ap.add_argument("--backend", help="auto | ncnn | onnxruntime | opencv")
     ap.add_argument("--threads", type=int, help="CPU threads for the detector (Pi 4B: 3)")
     ap.add_argument("--no-detect", action="store_true", help="Lanes only")
@@ -88,6 +90,10 @@ def apply_args(cfg: dict, a) -> None:
         cfg["display"]["mode"] = a.view
     if a.speed is not None:
         cfg.setdefault("telemetry", {})["speed_kmh"] = a.speed
+    if a.zoom:
+        cfg.setdefault("telemetry", {})["zoom"] = a.zoom
+    if a.daylight:
+        cfg["display"]["dark_mode"] = False
     if a.backend:
         cfg["detector"]["backend"] = a.backend
     if a.threads:
@@ -136,13 +142,15 @@ def main() -> int:
     lane_det = LaneDetector(cfg["lanes"])
     alert_mgr = AlertManager(cfg["alerts"]["hold_s"])
 
-    # Navigation & Map view
+    # Navigation & Map view (OpenStreetMap)
     map_view = MapView(
         width=target_disp_w,
         height=target_disp_h,
         lat=telem_cfg.get("latitude", 6.9271),
         lon=telem_cfg.get("longitude", 79.8612),
+        zoom=telem_cfg.get("zoom", 16),
         base_speed=telem_cfg.get("speed_kmh", 48.0),
+        dark_mode=disp_cfg.get("dark_mode", True),
     )
 
     # Active view mode state
@@ -282,6 +290,7 @@ def main() -> int:
 
     log.info("Shutting down...")
     camera.stop()
+    map_view._tile_mgr.stop()
     if worker:
         worker.stop()
     if web:

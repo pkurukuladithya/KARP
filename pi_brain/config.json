@@ -44,6 +44,7 @@
     "mode": "vision",
     "width": 480,
     "height": 320,
+    "dark_mode": true,
     "web_port": 0,
     "web_fps": 12,
     "web_quality": 70
@@ -52,6 +53,7 @@
     "speed_kmh": 48.0,
     "sim_movement": true,
     "latitude": 6.9271,
-    "longitude": 79.8612
+    "longitude": 79.8612,
+    "zoom": 16
   }
 }
