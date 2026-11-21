@@ -10,6 +10,7 @@ import numpy as np
 from .alerts import Alert
 from .lanes import LaneResult
 from .tracking import VEHICLES, Track
+from .vehicle_state import VehicleState
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 COLORS = {
@@ -82,45 +83,56 @@ def draw_status(img: np.ndarray, line: str) -> None:
     cv2.putText(img, line, (6, int(16 * s)), FONT, 0.45 * s, (230, 230, 230), 1, cv2.LINE_AA)
 
 
-def draw_speed_badge(img: np.ndarray, speed_kmh: float) -> None:
-    """Draws a compact, high-contrast automotive speed badge on the vision HUD."""
-    w, h = img.shape[:2][1], img.shape[:2][0]
-    s = w / 640.0
-    bx, by = int(10 * s), int(30 * s)
-    bw, bh = int(95 * s), int(42 * s)
-
-    # Translucent card background
+def _card(img: np.ndarray, bx: int, by: int, bw: int, bh: int, border=(60, 80, 100)) -> None:
     roi = img[by : by + bh, bx : bx + bw]
     over = np.full_like(roi, (24, 20, 16))
     cv2.addWeighted(over, 0.75, roi, 0.25, 0, dst=roi)
-    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (60, 80, 100), 1)
-
-    spd_text = f"{max(0.0, speed_kmh):.0f}"
-    cv2.putText(img, spd_text, (bx + int(8 * s), by + int(28 * s)), FONT, 0.85 * s, (0, 230, 255), 2, cv2.LINE_AA)
-    cv2.putText(img, "KM/H", (bx + int(50 * s), by + int(26 * s)), FONT, 0.38 * s, (0, 200, 230), 1, cv2.LINE_AA)
+    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), border, 1)
 
 
-def draw_road_badge(img: np.ndarray, road: str, pothole: bool = False) -> None:
-    """Draws road condition and pothole indicator from ESP32 MPU6050."""
+def draw_speed_badge(img: np.ndarray, vs: "VehicleState") -> None:
+    """Speed card: real GPS speed only; otherwise "--" plus the reason (GPS CONNECTING / NO ESP32)."""
+    w = img.shape[1]
+    s = w / 640.0
+    bx, by = int(10 * s), int(30 * s)
+    bw, bh = int(95 * s), int(42 * s)
+    _card(img, bx, by, bw, bh, border=vs.gps_color if vs.speed_kmh is None else (60, 80, 100))
+
+    num_col = (0, 230, 255) if vs.speed_kmh is not None else (130, 130, 130)
+    cv2.putText(img, vs.speed_text, (bx + int(8 * s), by + int(26 * s)), FONT, 0.8 * s, num_col, 2, cv2.LINE_AA)
+    cv2.putText(img, "KM/H", (bx + int(52 * s), by + int(24 * s)), FONT, 0.36 * s, (0, 200, 230), 1, cv2.LINE_AA)
+    status_col = vs.gps_color if vs.speed_kmh is None else (160, 180, 195)
+    cv2.putText(img, vs.speed_status, (bx + int(6 * s), by + int(38 * s)), FONT, 0.28 * s, status_col, 1, cv2.LINE_AA)
+
+
+def draw_road_badge(img: np.ndarray, vs: "VehicleState") -> None:
+    """Road condition from the ESP32 MPU6050 (or ESP32 OFF / MPU ERROR)."""
     w = img.shape[1]
     s = w / 640.0
     bx, by = int(112 * s), int(30 * s)
     bw, bh = int(125 * s), int(42 * s)
-
-    roi = img[by : by + bh, bx : bx + bw]
-    over = np.full_like(roi, (24, 20, 16))
-    cv2.addWeighted(over, 0.75, roi, 0.25, 0, dst=roi)
-    cv2.rectangle(img, (bx, by), (bx + bw, by + bh), (60, 80, 100), 1)
+    _card(img, bx, by, bw, bh)
 
     cv2.putText(img, "ROAD HEALTH", (bx + int(8 * s), by + int(14 * s)), FONT, 0.32 * s, (150, 170, 190), 1, cv2.LINE_AA)
-
-    if pothole:
+    if vs.pothole:
         cv2.putText(img, "! POTHOLE !", (bx + int(8 * s), by + int(32 * s)), FONT, 0.45 * s, (0, 0, 255), 2, cv2.LINE_AA)
-    else:
-        road_upper = road.upper() if road else "UNKNOWN"
-        color = (0, 230, 80) if road_upper == "SMOOTH" else ((0, 215, 255) if road_upper == "MODERATE" else (0, 80, 255))
-        cv2.circle(img, (bx + int(14 * s), by + int(28 * s)), int(4 * s), color, -1)
-        cv2.putText(img, road_upper, (bx + int(24 * s), by + int(32 * s)), FONT, 0.42 * s, color, 1, cv2.LINE_AA)
+        return
+    color = vs.road_color
+    cv2.circle(img, (bx + int(14 * s), by + int(28 * s)), int(4 * s), color, -1)
+    cv2.putText(img, vs.road_text, (bx + int(24 * s), by + int(32 * s)), FONT, 0.42 * s, color, 1, cv2.LINE_AA)
+
+
+def draw_gps_badge(img: np.ndarray, vs: "VehicleState") -> None:
+    """GPS / ESP32 link state, next to the speed and road cards."""
+    w = img.shape[1]
+    s = w / 640.0
+    bx, by = int(244 * s), int(30 * s)
+    text = vs.gps_text
+    (tw, _), _ = cv2.getTextSize(text, FONT, 0.4 * s, 1)
+    bw, bh = tw + int(30 * s), int(24 * s)
+    _card(img, bx, by, bw, bh, border=vs.gps_color)
+    cv2.circle(img, (bx + int(11 * s), by + bh // 2), int(4 * s), vs.gps_color, -1)
+    cv2.putText(img, text, (bx + int(20 * s), by + int(17 * s)), FONT, 0.4 * s, (225, 230, 240), 1, cv2.LINE_AA)
 
 
 def draw_view_mode_pill(img: np.ndarray, mode_name: str) -> None:

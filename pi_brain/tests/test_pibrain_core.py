@@ -115,36 +115,64 @@ def test_config_file_loads():
     cfg = load_config()
     assert cfg["detector"]["input_size"] == 320 and cfg["camera"]["width"] == 640
     assert cfg["display"]["width"] == 480 and cfg["display"]["height"] == 320
-    assert "telemetry" in cfg and cfg["telemetry"]["speed_kmh"] == 48.0
+    assert "speed_kmh" not in cfg["telemetry"] and "sim_movement" not in cfg["telemetry"]  # no fake speed
 
 
-def test_map_view_rendering_and_split():
-    from brain.map_view import MapView
+def _states():
+    from brain.vehicle_state import VehicleStateEstimator
+    from brain.esp32 import empty_snapshot
+
+    est = VehicleStateEstimator()
+    offline = est.update(empty_snapshot(), now=0.0)
+    base = dict(empty_snapshot(), connected=True, link="ONLINE", mpu_connected=True, road="SMOOTH",
+                gps_connected=True, satellites=3)
+    searching = est.update(base, now=1.0)
+    fix = dict(base, gps_valid=True, lat=6.9271, lon=79.8612, satellites=8, raw_speed_kmh=42.0,
+               speed_kmh=42.0, vehicle_moving=True, vibration=0.08, heading_deg=90.0)
+    moving = est.update(fix, now=2.0)
+    lost = est.update(base, now=5.0)
+    return offline, searching, moving, lost
+
+
+def test_map_and_hud_render_every_state():
+    import numpy as np
     from brain.alerts import Alert
-    import numpy as np
+    from brain.hud import draw_gps_badge, draw_road_badge, draw_speed_badge, draw_view_mode_pill
+    from brain.map_view import MapView
 
-    mv = MapView(width=480, height=320, lat=6.9271, lon=79.8612, base_speed=48.0)
-    spd = mv.update_telemetry(sim_movement=True)
-    assert 40.0 < spd < 60.0
-
+    mv = MapView(width=480, height=320, lat=6.9271, lon=79.8612)
     alerts = [Alert("fcw", "CRITICAL", "BRAKE! CAR 4.2m")]
-    map_img = mv.render(spd, alerts, "MAP")
-    assert map_img.shape == (320, 480, 3)
+    try:
+        for vs in _states():
+            mv.set_state(vs)
+            assert mv.render(alerts, "MAP").shape == (320, 480, 3)
+            assert mv.render_split(np.zeros((320, 480, 3), np.uint8), alerts).shape == (320, 480, 3)
+            img = np.zeros((480, 640, 3), np.uint8)
+            draw_speed_badge(img, vs)
+            draw_road_badge(img, vs)
+            draw_gps_badge(img, vs)
+            draw_view_mode_pill(img, "VISION")
+            assert np.any(img > 0)
+    finally:
+        mv._tile_mgr.stop()
 
-    dummy_vision = np.zeros((320, 480, 3), dtype=np.uint8)
-    split_img = mv.render_split(dummy_vision, spd, alerts)
-    assert split_img.shape == (320, 480, 3)
-    mv._tile_mgr.stop()
 
+def test_map_never_moves_without_real_gps():
+    from brain.map_view import MapView
 
-def test_hud_speed_badge():
-    import numpy as np
-    from brain.hud import draw_speed_badge, draw_view_mode_pill
-
-    img = np.zeros((320, 480, 3), dtype=np.uint8)
-    draw_speed_badge(img, 52.0)
-    draw_view_mode_pill(img, "VISION")
-    assert np.any(img > 0)
+    offline, searching, moving, lost = _states()
+    mv = MapView(lat=1.0, lon=2.0)
+    try:
+        for _ in range(50):
+            mv.set_state(offline)
+            mv.set_state(searching)
+        assert (mv.lat, mv.lon) == (1.0, 2.0) and len(mv._trail_gps) == 0  # home area, no marker/trail
+        mv.set_state(moving)
+        assert (mv.lat, mv.lon) == (6.9271, 79.8612) and len(mv._trail_gps) == 1
+        mv.set_state(lost)
+        assert (mv.lat, mv.lon) == (6.9271, 79.8612) and len(mv._trail_gps) == 1  # stays at last real fix
+    finally:
+        mv._tile_mgr.stop()
 
 
 def test_real_model_detects_bus_if_available():

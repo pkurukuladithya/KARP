@@ -6,7 +6,7 @@ Features:
   - Background asynchronous tile downloading and persistent local disk caching.
   - Zero-lag architecture: display loop never blocks on network requests.
   - Sleek automotive dark-theme filter for night/cabin driving (avoids bright screen glare).
-  - Vehicle marker (cyan arrowhead ▲) locked to exact road coordinates and rotated by heading.
+  - Vehicle marker at the REAL GPS fix only (grey at the last known fix). No simulated motion.
   - Real GPS breadcrumb trajectory trail rendered on top of actual street maps.
   - High-visibility automotive digital speedometer and telemetry cards.
   - Full ADAS collision / lane departure alert pass-through.
@@ -21,13 +21,14 @@ import time
 import urllib.request
 from collections import deque
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Set, Tuple
+from typing import Deque, Dict, List, Set, Tuple
 
 import cv2
 import numpy as np
 
 from .alerts import Alert
 from .hud import draw_alerts, FONT
+from .vehicle_state import VehicleState
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 MAP_CACHE_DIR = BASE_DIR / "data" / "map_cache"
@@ -68,7 +69,12 @@ class OSMTileManager:
         tile_path = self.cache_dir / str(zoom) / f"{x}_{y}.png"
         if tile_path.is_file():
             raw = cv2.imread(str(tile_path))
-            if raw is not None and raw.shape == (256, 256, 3):
+            if raw is None or raw.shape != (256, 256, 3):
+                try:
+                    tile_path.unlink()  # corrupt (e.g. power loss while saving): download again
+                except OSError:
+                    pass
+            else:
                 tile = self._style_tile(raw, dark_mode)
                 with self._lock:
                     if len(self._memory_cache) > self._max_mem_tiles:
@@ -140,7 +146,10 @@ class OSMTileManager:
                     data = resp.read()
                 img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
                 if img is not None and img.shape == (256, 256, 3):
-                    cv2.imwrite(str(tile_path), img)
+                    # Write-then-rename: readers never see a half-written tile
+                    tmp_path = tile_dir / f"{x}_{y}.{threading.get_ident()}.tmp"
+                    tmp_path.write_bytes(data)
+                    os.replace(tmp_path, tile_path)
                 time.sleep(0.12)  # Respect OpenStreetMap tile server rate policy
             except Exception:
                 time.sleep(0.5)
@@ -150,6 +159,13 @@ class OSMTileManager:
 
 
 class MapView:
+    """
+    Navigation map. Shows ONLY real GPS data from the ESP32 (no simulated motion):
+      - GPS fix      : map follows the vehicle, cyan marker + breadcrumb trail
+      - fix lost     : map stays at the last real fix, grey marker, "LAST KNOWN POSITION"
+      - never fixed  : map of the configured home area, no vehicle marker, status overlay
+    """
+
     def __init__(
         self,
         width: int = 480,
@@ -157,140 +173,76 @@ class MapView:
         lat: float = 6.9271,
         lon: float = 79.8612,
         zoom: int = 16,
-        base_speed: float = 48.0,
         dark_mode: bool = True,
     ):
         self.w = int(width)
         self.h = int(height)
-        self.lat = float(lat)
-        self.lon = float(lon)
+        self.home_lat = float(lat)  # map area shown before the first real fix
+        self.home_lon = float(lon)
+        self.lat = self.home_lat  # current map centre
+        self.lon = self.home_lon
         self.zoom = int(zoom)
         self.dark_mode = bool(dark_mode)
-        self.base_speed = float(base_speed)
-        self.current_speed = self.base_speed
-        self.heading_deg = 42.0
-        self.altitude_m = 18.5
-        self.satellites = 9
-        self.has_fix = True
-        self.road_condition = "SMOOTH"
-        self.pothole_detected = False
-
-        self._t_last = time.perf_counter()
+        self.state = VehicleState()
         self._trail_gps: Deque[Tuple[float, float]] = deque(maxlen=40)
         self._tile_mgr = OSMTileManager()
 
-    def update_telemetry(
-        self,
-        speed_kmh: Optional[float] = None,
-        lat: Optional[float] = None,
-        lon: Optional[float] = None,
-        heading: Optional[float] = None,
-        satellites: Optional[int] = None,
-        has_fix: Optional[bool] = None,
-        altitude: Optional[float] = None,
-        road: Optional[str] = None,
-        pothole: bool = False,
-        sim_movement: bool = True,
-    ) -> float:
-        """Updates vehicle state from real GPS/ESP32; simulates realistic motion if disconnected."""
-        now = time.perf_counter()
-        dt = max(0.001, min(0.2, now - self._t_last))
-        self._t_last = now
+    def set_state(self, state: VehicleState) -> None:
+        self.state = state
+        if state.has_fix:
+            self.lat, self.lon = state.lat, state.lon
+            if not self._trail_gps or self._trail_gps[-1] != (state.lat, state.lon):
+                self._trail_gps.append((state.lat, state.lon))
+        elif state.last_lat is not None:
+            self.lat, self.lon = state.last_lat, state.last_lon
+        else:
+            self.lat, self.lon = self.home_lat, self.home_lon
 
-        if satellites is not None:
-            self.satellites = int(satellites)
-        if has_fix is not None:
-            self.has_fix = bool(has_fix)
-        if altitude is not None:
-            self.altitude_m = float(altitude)
-        if road is not None:
-            self.road_condition = str(road)
-        self.pothole_detected = bool(pothole)
+    @property
+    def _has_position(self) -> bool:
+        return self.state.last_lat is not None
 
-        if speed_kmh is not None:
-            self.current_speed = float(speed_kmh)
-        elif sim_movement:
-            # Subtle driving variation around base_speed (e.g. 47.4 to 48.8 km/h)
-            self.current_speed = self.base_speed + 1.2 * math.sin(now * 0.4) + 0.4 * math.cos(now * 0.9)
-
-        if heading is not None:
-            self.heading_deg = float(heading)
-        elif sim_movement and self.current_speed > 2.0:
-            # Gentle realistic steering curvature along the road
-            self.heading_deg = (self.heading_deg + 0.6 * math.sin(now * 0.18) * dt * 8.0) % 360.0
-
-        if lat is not None and lon is not None:
-            self.lat, self.lon = float(lat), float(lon)
-        elif sim_movement and self.current_speed > 1.0:
-            speed_ms = self.current_speed / 3.6
-            dist_m = speed_ms * dt
-            rad = math.radians(self.heading_deg)
-            self.lat += (dist_m * math.cos(rad)) / 111111.0
-            self.lon += (dist_m * math.sin(rad)) / (111111.0 * math.cos(math.radians(self.lat)))
-
-        self._trail_gps.append((self.lat, self.lon))
-        return self.current_speed
-
-    def render(self, speed_kmh: float, alerts: List[Alert], mode_name: str = "MAP") -> np.ndarray:
-        """Renders the full 480x320 OpenStreetMap navigation canvas."""
+    def render(self, alerts: List[Alert], mode_name: str = "MAP") -> np.ndarray:
+        """Renders the full OpenStreetMap navigation canvas."""
         w, h = self.w, self.h
-
-        # 1. Generate stitched OpenStreetMap canvas centered on the vehicle
         canvas = self._render_osm_background(w, h)
-
-        # 2. Draw GPS trajectory breadcrumb trail over real streets
-        self._draw_trajectory_trail(canvas, w, h)
-
-        # 3. Draw Vehicle Position & Heading Marker (Cyan Arrowhead ▲)
-        self._draw_vehicle_marker(canvas, w // 2, h // 2)
-
-        # 4. Automotive Digital Speedometer Card (Left Panel)
-        self._draw_speedometer(canvas, 10, 36, speed_kmh)
-
-        # 5. Telemetry Cards (GPS Coordinates, Heading, Satellites)
+        if self._has_position:
+            self._draw_trajectory_trail(canvas, w, h)
+            self._draw_vehicle_marker(canvas, w // 2, h // 2)
+        self._draw_speedometer(canvas, 10, 36)
         self._draw_telemetry_info(canvas, 10, 168)
-
-        # 6. Top Status Header & Mode Switcher Pill
+        self._draw_position_notice(canvas, (195 + w) // 2, h // 2)  # free area right of the panels
         self._draw_top_bar(canvas, mode_name)
-
-        # 7. Bottom Coordinates Bar
         self._draw_bottom_bar(canvas)
-
-        # 8. Safety Alert Banners (flashes on top if collision / lane departure occurs)
         if alerts:
             draw_alerts(canvas, alerts)
-
         return canvas
 
-    def render_split(self, vision_frame: np.ndarray, speed_kmh: float, alerts: List[Alert]) -> np.ndarray:
+    def render_split(self, vision_frame: np.ndarray, alerts: List[Alert]) -> np.ndarray:
         """Renders 50/50 Split View: Left half = ADAS Vision, Right half = OSM Navigation Map."""
         w, h = self.w, self.h
         half_w = w // 2
-
-        # Resize camera vision frame to fit left half
         left_img = cv2.resize(vision_frame, (half_w, h), interpolation=cv2.INTER_LINEAR)
 
-        # Render OSM map on right half
         right_img = self._render_osm_background(half_w, h)
-        self._draw_trajectory_trail(right_img, half_w, h)
-        self._draw_vehicle_marker(right_img, half_w // 2, int(h * 0.46))
-        self._draw_speedometer(right_img, 8, int(h * 0.65), speed_kmh, compact=True)
+        if self._has_position:
+            self._draw_trajectory_trail(right_img, half_w, h)
+            self._draw_vehicle_marker(right_img, half_w // 2, h // 2)
+        self._draw_position_notice(right_img, half_w // 2, int(h * 0.40), compact=True)
+        self._draw_speedometer(right_img, 8, int(h * 0.65), compact=True)
 
-        # Combine halves
         canvas = np.hstack([left_img, right_img])
-
-        # Vertical divider line
         cv2.line(canvas, (half_w, 0), (half_w, h), (55, 75, 95), 2)
 
-        # Top Bar
         bar_h = 22
         canvas[:bar_h] = (canvas[:bar_h] * 0.35).astype(np.uint8)
-        cv2.putText(canvas, f"VISION (L) | OSM MAP (R) | {speed_kmh:.0f} KM/H", (6, 16), FONT, 0.42, (230, 230, 230), 1, cv2.LINE_AA)
+        st = self.state
+        cv2.circle(canvas, (12, 11), 4, st.gps_color, -1)
+        cv2.putText(canvas, f"{st.gps_text} | {st.speed_text} KM/H", (22, 16), FONT, 0.40, (230, 230, 230), 1, cv2.LINE_AA)
         cv2.putText(canvas, "[CLICK TO SWITCH]", (w - 140, 16), FONT, 0.36, (0, 220, 255), 1, cv2.LINE_AA)
 
         if alerts:
             draw_alerts(canvas, alerts)
-
         return canvas
 
     # ------------------------------------------------------------- OSM Stitched Rendering
@@ -351,8 +303,14 @@ class MapView:
 
     def _draw_vehicle_marker(self, img: np.ndarray, cx: int, cy: int) -> None:
         """Draws the glowing automotive vehicle marker (▲) oriented by heading."""
+        live = self.state.has_fix
+        if self.state.heading_deg is None:  # heading unknown: plain dot, no invented direction
+            color = (255, 215, 0) if live else (130, 130, 130)
+            cv2.circle(img, (cx, cy), 9, color, -1, cv2.LINE_AA)
+            cv2.circle(img, (cx, cy), 9, (255, 255, 255), 1, cv2.LINE_AA)
+            return
         # Rotating arrowhead
-        rad = math.radians(self.heading_deg)
+        rad = math.radians(self.state.heading_deg)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
 
         base_pts = [
@@ -370,11 +328,33 @@ class MapView:
 
         poly = np.array(rotated_pts, dtype=np.int32)
         cv2.circle(img, (cx, cy), 16, (40, 70, 90), 1, cv2.LINE_AA)
-        cv2.fillPoly(img, [poly], (255, 215, 0))  # Cyan body
+        cv2.fillPoly(img, [poly], (255, 215, 0) if live else (130, 130, 130))  # cyan = live, grey = last fix
         cv2.polylines(img, [poly], True, (255, 255, 255), 1, cv2.LINE_AA)  # White border
         cv2.circle(img, (cx, cy), 2, (0, 255, 255), -1)
 
-    def _draw_speedometer(self, img: np.ndarray, x: int, y: int, speed: float, compact: bool = False) -> None:
+    def _draw_position_notice(self, img: np.ndarray, cx: int, cy: int, compact: bool = False) -> None:
+        """Explains why there is no live vehicle position (never invents one)."""
+        st = self.state
+        if st.has_fix:
+            return
+        if self._has_position:
+            age = st.last_fix_age_s or 0.0
+            lines = ["LAST KNOWN POSITION", f"{age:.0f}s ago" if compact else f"{st.gps_text} - {age:.0f}s ago"]
+            y = cy + 30
+        else:
+            lines = [st.speed_status if compact else st.gps_text, "NO GPS POSITION YET"]
+            y = cy - 10
+        scale = 0.42 if compact else 0.55
+        for i, text in enumerate(lines):
+            thick = 2 if i == 0 else 1
+            (tw, th), _ = cv2.getTextSize(text, FONT, scale, thick)
+            x = max(4, cx - tw // 2)
+            yy = y + i * (th + 14)
+            cv2.rectangle(img, (x - 6, yy - th - 6), (x + tw + 6, yy + 6), (20, 16, 12), -1)
+            cv2.putText(img, text, (x, yy), FONT, scale, st.gps_color if i == 0 else (200, 210, 220), thick, cv2.LINE_AA)
+
+    def _draw_speedometer(self, img: np.ndarray, x: int, y: int, compact: bool = False) -> None:
+        st = self.state
         bw, bh = (175, 120) if not compact else (135, 90)
         roi = img[y : y + bh, x : x + bw]
         over = np.full_like(roi, (22, 18, 14))
@@ -383,23 +363,27 @@ class MapView:
 
         cv2.putText(img, "GROUND SPEED", (x + 8, y + 16), FONT, 0.35, (150, 170, 190), 1, cv2.LINE_AA)
 
-        spd_str = f"{max(0.0, speed):.0f}"
         num_scale = 1.35 if not compact else 1.05
-        (tw, th), _ = cv2.getTextSize(spd_str, FONT, num_scale, 2)
-        cv2.putText(img, spd_str, (x + 12, y + 20 + th + 6), FONT, num_scale, (0, 230, 255), 2, cv2.LINE_AA)
+        num_col = (0, 230, 255) if st.speed_kmh is not None else (120, 120, 120)
+        (tw, th), _ = cv2.getTextSize(st.speed_text, FONT, num_scale, 2)
+        cv2.putText(img, st.speed_text, (x + 12, y + 20 + th + 6), FONT, num_scale, num_col, 2, cv2.LINE_AA)
         cv2.putText(img, "KM/H", (x + 18 + tw, y + 20 + th - 2), FONT, 0.45, (0, 200, 230), 1, cv2.LINE_AA)
 
-        bar_x = x + 10
-        bar_y = y + bh - 16
-        bar_w = bw - 20
+        # Where the number comes from / why there is none ("GPS CONNECTING", "STATIONARY", "NO ESP32")
+        status_col = st.gps_color if st.speed_kmh is None else (170, 190, 205)
+        cv2.putText(img, st.speed_status, (x + 10, y + bh - 24), FONT, 0.36, status_col, 1, cv2.LINE_AA)
+
+        bar_x, bar_y, bar_w = x + 10, y + bh - 16, bw - 20
         cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_w, bar_y + 6), (40, 45, 50), -1)
-        pct = min(1.0, max(0.0, speed / 120.0))
-        fill_w = int(bar_w * pct)
-        bar_color = (0, 215, 255) if speed < 80 else ((0, 160, 255) if speed < 100 else (0, 0, 255))
-        if fill_w > 0:
-            cv2.rectangle(img, (bar_x, bar_y), (bar_x + fill_w, bar_y + 6), bar_color, -1)
+        if st.speed_kmh is not None:
+            speed = st.speed_kmh
+            fill_w = int(bar_w * min(1.0, max(0.0, speed / 120.0)))
+            bar_color = (0, 215, 255) if speed < 80 else ((0, 160, 255) if speed < 100 else (0, 0, 255))
+            if fill_w > 0:
+                cv2.rectangle(img, (bar_x, bar_y), (bar_x + fill_w, bar_y + 6), bar_color, -1)
 
     def _draw_telemetry_info(self, img: np.ndarray, x: int, y: int) -> None:
+        st = self.state
         bw, bh = 175, 110
         roi = img[y : y + bh, x : x + bw]
         over = np.full_like(roi, (22, 18, 14))
@@ -408,29 +392,31 @@ class MapView:
 
         cv2.putText(img, "TELEMETRY & ROAD", (x + 8, y + 16), FONT, 0.35, (150, 170, 190), 1, cv2.LINE_AA)
 
-        road_txt = f"ROAD: {self.road_condition}" if not self.pothole_detected else "! POTHOLE ALERT !"
-        road_col = (0, 0, 255) if self.pothole_detected else ((0, 230, 80) if self.road_condition == "SMOOTH" else ((0, 210, 255) if self.road_condition == "MODERATE" else (0, 80, 255)))
-
-        items = [
-            (f"LAT:  {self.lat:.4f} N", (200, 220, 235)),
-            (f"LON:  {self.lon:.4f} E", (200, 220, 235)),
-            (f"HDG:  {self.heading_deg:03.0f} deg ({self._compass_heading()})", (200, 220, 235)),
-            (road_txt, road_col),
-        ]
-        for idx, (text, col) in enumerate(items):
-            cv2.putText(img, text, (x + 10, y + 36 + idx * 18), FONT, 0.36, col, 1, cv2.LINE_AA)
+        live = (200, 220, 235)
+        unknown = (120, 120, 120)
+        if st.has_fix:
+            lat_t, lon_t, col = f"LAT:  {st.lat:.5f}", f"LON:  {st.lon:.5f}", live
+        else:
+            lat_t, lon_t, col = "LAT:  --", "LON:  --", unknown
+        if st.has_fix and st.heading_deg is not None:
+            hdg, hdg_col = f"HDG:  {st.heading_deg:03.0f} deg ({self._compass_heading()})", live
+        else:
+            hdg, hdg_col = "HDG:  --", unknown
+        if st.pothole:
+            road_txt, road_col = "! POTHOLE ALERT !", (0, 0, 255)
+        else:
+            road_txt, road_col = f"ROAD: {st.road_text}", st.road_color
+        items = [(lat_t, col), (lon_t, col), (hdg, hdg_col), (road_txt, road_col)]
+        for idx, (text, c) in enumerate(items):
+            cv2.putText(img, text, (x + 10, y + 36 + idx * 18), FONT, 0.36, c, 1, cv2.LINE_AA)
 
     def _draw_top_bar(self, img: np.ndarray, mode_name: str) -> None:
         bar_h = 24
         img[:bar_h] = (img[:bar_h] * 0.35).astype(np.uint8)
+        st = self.state
+        cv2.circle(img, (12, 12), 4, st.gps_color, -1)
+        cv2.putText(img, st.gps_text, (22, 16), FONT, 0.38, (220, 230, 240), 1, cv2.LINE_AA)
 
-        # GPS Fix indicator
-        fix_text = f"GPS: 3D FIX ({self.satellites} SATS)" if self.has_fix else "GPS: SEARCHING..."
-        fix_color = (0, 230, 80) if self.has_fix else (0, 100, 255)
-        cv2.circle(img, (12, 12), 4, fix_color, -1)
-        cv2.putText(img, fix_text, (22, 16), FONT, 0.38, (220, 230, 240), 1, cv2.LINE_AA)
-
-        # Mode Switcher Pill
         mode_pill = f"[{mode_name.upper()} | CLICK TO SWITCH]"
         (mw, _), _ = cv2.getTextSize(mode_pill, FONT, 0.38, 1)
         cv2.putText(img, mode_pill, (self.w - mw - 10, 16), FONT, 0.38, (0, 215, 255), 1, cv2.LINE_AA)
@@ -439,10 +425,17 @@ class MapView:
         bar_h = 22
         y0 = self.h - bar_h
         img[y0:] = (img[y0:] * 0.35).astype(np.uint8)
-        foot = f"OpenStreetMap (ODbL) | COORD {self.lat:.5f}, {self.lon:.5f} | ZOOM {self.zoom}"
+        st = self.state
+        if st.has_fix:
+            where = f"GPS {st.lat:.5f}, {st.lon:.5f}"
+        elif self._has_position:
+            where = f"LAST FIX {st.last_lat:.5f}, {st.last_lon:.5f}"
+        else:
+            where = "NO GPS POSITION (home area)"
+        foot = f"OpenStreetMap (ODbL) | {where} | ZOOM {self.zoom}"
         cv2.putText(img, foot, (10, self.h - 6), FONT, 0.34, (150, 170, 190), 1, cv2.LINE_AA)
 
     def _compass_heading(self) -> str:
         pts = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        idx = int((self.heading_deg + 22.5) / 45.0) % 8
+        idx = int(((self.state.heading_deg or 0.0) + 22.5) / 45.0) % 8
         return pts[idx]

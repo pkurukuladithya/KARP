@@ -177,7 +177,9 @@ class Esp32Client:
         if snap["link"] == "ONLINE" and not snap["connected"]:
             snap["link"] = "STALE"
         if not snap["connected"]:
-            snap["road"] = "DISCONNECTED"
+            # Never hand out old sensor values once the link is gone
+            snap.update(road="DISCONNECTED", gps_valid=False, gps_connected=False, mpu_connected=False,
+                        speed_kmh=0.0, raw_speed_kmh=0.0, satellites=0, vehicle_moving=False)
         snap["pothole"] = now - self._last_pothole < POTHOLE_HOLD_S
         return snap
 

@@ -61,7 +61,6 @@ bash run.sh                      # window (fitted to 480x320 display)
 bash run.sh --fullscreen         # kiosk mode (fills 3.5" LCD completely)
 bash run.sh --view map           # start directly in Navigation Map mode
 bash run.sh --view split         # start in Split mode (Vision + Map)
-bash run.sh --speed 50           # set base vehicle speed in km/h
 bash run.sh --web 8080           # plus a live view at http://<pi-ip>:8080 on a phone
 bash run.sh --headless --web 8080   # no monitor attached
 bash run.sh --source picam       # Pi Camera Module instead of USB
@@ -83,12 +82,22 @@ Window keys & Controls:
 
 Every 5 s the terminal prints a line like this:
 ```
-STATUS | mode VISION | camera 30.0 fps | display 29.8 fps | AI 8.4 fps, 105 ms [ncnn] | lanes 6.1 ms | speed 48.2 km/h | CPU 62C
+STATUS | mode VISION | camera 30.0 fps | display 29.8 fps | AI 8.4 fps, 105 ms [ncnn] | lanes 6.1 ms | CPU 62C
 ```
 
 ## ESP32 sensor hub (USB serial)
 
-The ESP32-S3 firmware in `esp32_firmware/` adds GPS (NEO-6M), road vibration (MPU6050), status LEDs and a buzzer. It is optional: without it, pi_brain runs with simulated speed and map position.
+The ESP32-S3 firmware in `esp32_firmware/` adds GPS (NEO-6M), road vibration (MPU6050), status LEDs and a buzzer. It is optional, and pi_brain never invents sensor values:
+
+| Situation | Speed | Map / GPS | Road |
+|---|---|---|---|
+| ESP32 not connected | `--` NO ESP32 | "ESP32 NOT CONNECTED", home area, no vehicle marker | ESP32 OFF |
+| ESP32 online, GPS module sends nothing | `--` NO GPS DATA | "GPS NO DATA" | from MPU |
+| GPS searching for satellites | `--` GPS CONNECTING | "GPS CONNECTING..." (last real fix in grey, if any) | from MPU |
+| GPS fix, car standing still | `0` STATIONARY | live position | from MPU |
+| GPS fix, car moving | real GPS speed | live position, heading, trail | from MPU |
+
+**Standing still** is confirmed with the MPU6050. If the MPU feels almost no vibration (< 0.03 g) and GPS reports under 8 km/h, the speed shows 0. This hides the GPS drift a parked car shows. The firmware's own moving/stationary decision (GPS speed plus vibration) is also respected.
 
 **Connect:** plug the ESP32-S3's USB port into the Pi. It appears as `/dev/ttyACM0` (native USB) or `/dev/ttyUSB0` (CP210x/CH340 boards). With `"esp32_port": "auto"` in `config.json`, pi_brain finds it by its USB ID. It reconnects by itself if the cable is unplugged or the ESP32 resets.
 
@@ -124,7 +133,7 @@ The ESP32 counts as online only while telemetry keeps arriving. After 1.5 s with
 |---|---|
 | `display.mode` | Initial view: `vision`, `map`, or `split`. |
 | `display.width` / `height` | Target display output (default: 480x320 for 3.5" LCD). |
-| `telemetry.speed_kmh` | Base vehicle speed for the speedometer display. |
+| `telemetry.latitude/longitude` | Map area shown before the first GPS fix (no vehicle marker is drawn there). |
 | `geometry.camera_height_m` | Lens height above the road. Distance accuracy depends on it. |
 | `geometry.pitch_deg` | Downward tilt of the camera (0 = level). |
 | `geometry.hfov_deg` | Your camera's horizontal field of view (most webcams are 60–78°). |

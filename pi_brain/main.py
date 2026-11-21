@@ -5,7 +5,6 @@ KARP Pi Brain - standalone ADAS on a Raspberry Pi 4B (camera + Pi only, no GPU, 
     python main.py --fullscreen             # kiosk style on the car display (e.g. 3.5" 480x320 LCD)
     python main.py --view map               # start directly in Navigation Map view
     python main.py --view split             # start in Split view (ADAS Vision + Map)
-    python main.py --speed 50               # set base vehicle speed (km/h)
     python main.py --web 8080               # also watch at http://<pi-ip>:8080 from a phone
     python main.py --source picam           # Raspberry Pi CSI camera module
     python main.py --source road.mp4        # replay a dash-cam video
@@ -45,6 +44,7 @@ from brain.esp32 import AlertSignaler, Esp32Client  # noqa: E402
 from brain import hud  # noqa: E402
 from brain.lanes import LaneDetector  # noqa: E402
 from brain.map_view import MapView  # noqa: E402
+from brain.vehicle_state import VehicleStateEstimator  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(name)s] %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("pi_brain")
@@ -62,7 +62,6 @@ def parse_args():
     ap.add_argument("--disp-width", type=int, help="Display output width (default: 480 for 3.5\" LCD)")
     ap.add_argument("--disp-height", type=int, help="Display output height (default: 320 for 3.5\" LCD)")
     ap.add_argument("--view", choices=VIEW_MODES, help="Initial view mode: vision | map | split")
-    ap.add_argument("--speed", type=float, help="Base vehicle speed in km/h (hardcoded/simulated)")
     ap.add_argument("--zoom", type=int, default=16, help="OpenStreetMap zoom level (default: 16)")
     ap.add_argument("--daylight", action="store_true", help="Use standard daylight OSM tiles instead of dark theme")
     ap.add_argument("--backend", help="auto | ncnn | onnxruntime | opencv")
@@ -79,7 +78,7 @@ def parse_args():
 
 def esp32_status_line(t: dict) -> str:
     if not t["connected"]:
-        return f"{t['link']}" + (f" ({t['port']})" if t["port"] else "") + " - sensors offline, using simulation"
+        return f"{t['link']}" + (f" ({t['port']})" if t["port"] else "") + " - ESP32 NOT CONNECTED (speed/GPS/road shown as --)"
     gps = (f"GPS FIX {t['satellites']} sats {t['lat']:.5f},{t['lon']:.5f} {t['speed_kmh']:.1f} km/h"
            if t["gps_valid"] else
            (f"GPS searching ({t['satellites']} sats)" if t["gps_connected"] else "GPS module not sending"))
@@ -102,8 +101,6 @@ def apply_args(cfg: dict, a) -> None:
         cfg["display"]["height"] = a.disp_height
     if a.view:
         cfg["display"]["mode"] = a.view
-    if a.speed is not None:
-        cfg.setdefault("telemetry", {})["speed_kmh"] = a.speed
     if a.zoom:
         cfg.setdefault("telemetry", {})["zoom"] = a.zoom
     if a.daylight:
@@ -165,7 +162,6 @@ def main() -> int:
         lat=telem_cfg.get("latitude", 6.9271),
         lon=telem_cfg.get("longitude", 79.8612),
         zoom=telem_cfg.get("zoom", 16),
-        base_speed=telem_cfg.get("speed_kmh", 48.0),
         dark_mode=disp_cfg.get("dark_mode", True),
     )
 
@@ -176,6 +172,8 @@ def main() -> int:
         baud_rate=int(sensors_cfg.get("baud_rate", 115200)),
     )
     esp_signal = AlertSignaler(esp32)  # ADAS alerts -> ESP32 LEDs + buzzer (rate-limited)
+    vehicle = VehicleStateEstimator()  # decides which sensor values are real enough to show
+    last_gps_state = None
 
     # Active view mode state
     view_state = {"mode": disp_cfg.get("mode", "vision")}
@@ -225,37 +223,14 @@ def main() -> int:
         item = camera.wait_new(last_id, timeout=1.0)
         now = time.perf_counter()
 
-        # Read ESP32 telemetry (GPS + MPU6050 Accelerometer)
+        # Real sensor state from the ESP32 (no simulation: unknown values stay unknown)
         telem = esp32.get_telemetry()
-        has_esp = telem["connected"]
-        gps_fixed = telem["gps_valid"]
-
-        if has_esp:
-            spd_val = telem["speed_kmh"] if gps_fixed else None
-            lat_val = telem["lat"] if gps_fixed else None
-            lon_val = telem["lon"] if gps_fixed else None
-            hdg_val = telem["heading_deg"] if gps_fixed else None
-            sats_val = telem["satellites"]
-            alt_val = telem["altitude_m"]
-            road_val = telem["road"]
-            pothole_val = telem["pothole"]
-            speed_kmh = map_view.update_telemetry(
-                speed_kmh=spd_val,
-                lat=lat_val,
-                lon=lon_val,
-                heading=hdg_val,
-                satellites=sats_val,
-                has_fix=gps_fixed,
-                altitude=alt_val,
-                road=road_val,
-                pothole=pothole_val,
-                sim_movement=not gps_fixed and telem_cfg.get("sim_movement", True),
-            )
-        else:
-            road_val = "SIMULATED"
-            pothole_val = False
-            sim_mv = telem_cfg.get("sim_movement", True)
-            speed_kmh = map_view.update_telemetry(sim_movement=sim_mv)
+        vs = vehicle.update(telem, now)
+        map_view.set_state(vs)
+        pothole_val = vs.pothole
+        if vs.gps != last_gps_state:
+            log.info(f"Vehicle sensors: {vs.summary()}")
+            last_gps_state = vs.gps
 
         if item is None:
             vision_disp = hud.no_signal_frame(target_disp_w, target_disp_h, f"NO CAMERA SIGNAL ({camera.source})")
@@ -281,8 +256,9 @@ def main() -> int:
             vision_frame = frame.copy()
             hud.draw_lanes(vision_frame, lanes)
             hud.draw_tracks(vision_frame, tracks, now)
-            hud.draw_speed_badge(vision_frame, speed_kmh)
-            hud.draw_road_badge(vision_frame, road_val, pothole=pothole_val)
+            hud.draw_speed_badge(vision_frame, vs)
+            hud.draw_road_badge(vision_frame, vs)
+            hud.draw_gps_badge(vision_frame, vs)
 
             ai = f"AI {worker.fps:4.1f}fps {worker.infer_ms:3.0f}ms {worker.detector.backend}" if worker and worker.enabled else "AI off"
             ln = ("LANE " + ("OK" if lanes.stable else ("L" if lanes.left is not None else "-") +
@@ -299,9 +275,9 @@ def main() -> int:
         # Select view based on active mode
         mode = view_state["mode"]
         if mode == "map":
-            view = map_view.render(speed_kmh, alerts, mode)
+            view = map_view.render(alerts, mode)
         elif mode == "split":
-            view = map_view.render_split(vision_disp, speed_kmh, alerts)
+            view = map_view.render_split(vision_disp, alerts)
         else:  # default "vision"
             view = vision_disp
 
@@ -339,9 +315,10 @@ def main() -> int:
                 f"STATUS | mode {view_state['mode'].upper()} | camera {camera.capture_fps:4.1f} fps ({camera.description}) | display {disp_fps:4.1f} fps"
                 + (f" | AI {worker.fps:4.1f} fps, {worker.infer_ms:.0f} ms/inference, result age {worker.age_ms:.0f} ms"
                    f" [{worker.detector.backend}]" if worker else "")
-                + f" | lanes {lane_ms:.1f} ms | speed {speed_kmh:.1f} km/h" + (f" | CPU {temp:.0f}C" if temp else "")
+                + f" | lanes {lane_ms:.1f} ms" + (f" | CPU {temp:.0f}C" if temp else "")
             )
             log.info("ESP32  | " + esp32_status_line(telem))
+            log.info("SHOWN  | " + vs.summary())
             if temp and temp > 80:
                 log.warning("CPU above 80C - the Pi is throttling. Fit a heatsink + fan.")
             t_stat = now

@@ -62,8 +62,6 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "web_quality": 70,
     },
     "telemetry": {
-        "speed_kmh": 48.0,
-        "sim_movement": True,
         "latitude": 6.9271,
         "longitude": 79.8612,
         "zoom": 16,

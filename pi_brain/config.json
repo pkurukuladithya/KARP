@@ -50,8 +50,6 @@
     "web_quality": 70
   },
   "telemetry": {
-    "speed_kmh": 48.0,
-    "sim_movement": true,
     "latitude": 6.9271,
     "longitude": 79.8612,
     "zoom": 16

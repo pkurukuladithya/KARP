@@ -19,9 +19,9 @@ import threading
 import time
 
 
-def telemetry(t0: float, pothole: bool) -> dict:
+def telemetry(t0: float, pothole: bool, fix_after: float = 3.0) -> dict:
     t = time.time() - t0
-    fix = t > 3.0  # GPS "searching" for the first 3 s
+    fix = t > fix_after  # GPS "searching" until then
     return {
         "type": "sensor_telemetry",
         "timestamp_ms": int(t * 1000),
@@ -47,7 +47,7 @@ def telemetry(t0: float, pothole: bool) -> dict:
     }
 
 
-def serve(conn: socket.socket) -> None:
+def serve(conn: socket.socket, fix_after: float = 3.0) -> None:
     t0 = time.time()
 
     def send(obj) -> None:
@@ -75,13 +75,14 @@ def serve(conn: socket.socket) -> None:
     n = 0
     while True:
         n += 1
-        send(telemetry(t0, pothole=(n % 50 == 0)))  # pothole every 10 s
+        send(telemetry(t0, pothole=(n % 50 == 0), fix_after=fix_after))  # pothole every 10 s
         time.sleep(0.2)  # 5 Hz like the firmware
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=7000)
+    ap.add_argument("--fix-after", type=float, default=3.0, help="Seconds of GPS searching before a fix")
     args = ap.parse_args()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -92,7 +93,7 @@ def main() -> None:
         conn, _ = srv.accept()
         print("Pi connected")
         try:
-            serve(conn)
+            serve(conn, args.fix_after)
         except OSError:
             print("Pi disconnected")
         finally:
